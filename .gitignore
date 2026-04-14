@@ -25,6 +25,9 @@ apps/desktop/dist/
 # Tauri build output
 apps/desktop/src-tauri/target/
 
+# Tauri generated schemas (auto-generated at build time)
+apps/desktop/src-tauri/gen/
+
 # Temp files
 ~/.subtitle-generator/
 

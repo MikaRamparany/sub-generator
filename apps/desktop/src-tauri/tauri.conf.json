@@ -10,7 +10,6 @@
     "beforeBuildCommand": "npm run build"
   },
   "app": {
-    "title": "Subtitle Generator",
     "windows": [
       {
         "title": "Subtitle Generator",
@@ -34,8 +33,5 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
-  },
-  "plugins": {
-    "dialog": {}
   }
 }

@@ -44,7 +44,8 @@ export function VideoImport({ onProbeComplete }: Props) {
       const path = await openVideoFileDialog();
       if (path) await handleAbsolutePath(path);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not open file dialog");
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(`File dialog error: ${msg}`);
     }
   };
 

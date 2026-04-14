@@ -13,18 +13,20 @@ ICONS_DIR = os.path.join(os.path.dirname(__file__), "..", "apps", "desktop", "sr
 
 
 def make_minimal_png(width: int, height: int, color: tuple) -> bytes:
-    """Generate a minimal valid PNG file (no Pillow required)."""
+    """Generate a minimal valid RGBA PNG file."""
     r, g, b = color
+    a = 255
 
     # PNG signature
     sig = b"\x89PNG\r\n\x1a\n"
 
     # IHDR chunk
-    ihdr_data = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    # color type 6 = RGBA
+    ihdr_data = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
     ihdr = _chunk(b"IHDR", ihdr_data)
 
     # IDAT chunk — one row per line, filter byte 0 = None
-    raw_row = bytes([0] + [r, g, b] * width)
+    raw_row = bytes([0] + [r, g, b, a] * width)
     raw = raw_row * height
     compressed = zlib.compress(raw)
     idat = _chunk(b"IDAT", compressed)
