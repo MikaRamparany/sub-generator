@@ -25,7 +25,11 @@ class Settings(BaseSettings):
     supported_formats: list[str] = ["mp4", "mov", "mkv", "avi", "webm"]
     supported_languages: list[str] = ["fr", "en", "es", "de"]
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {
+        # Look for .env first in backend/, then in project root (../env)
+        "env_file": [".env", "../.env"],
+        "env_file_encoding": "utf-8",
+    }
 
     def get_temp_dir(self) -> Path:
         if self.temp_dir:
