@@ -1,0 +1,40 @@
+# Python
+backend/venv/
+backend/.venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/.pytest_cache/
+backend/**/.pytest_cache/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Environment
+.env
+!.env.example
+
+# Node
+apps/desktop/node_modules/
+apps/desktop/dist/
+
+# Tauri build output
+apps/desktop/src-tauri/target/
+
+# Temp files
+~/.subtitle-generator/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
