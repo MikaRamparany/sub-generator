@@ -24,6 +24,7 @@ class SubtitleTranslationProvider(ABC):
         segments: list[SubtitleSegment],
         target_language: str,
         source_language: str | None = None,
+        translation_mode: str = "fast",
     ) -> list[TranslatedSubtitleSegment]:
         """Translate subtitle segments to target language, preserving timecodes."""
         ...

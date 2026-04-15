@@ -230,6 +230,7 @@ class JobManager:
                     job.source_segments,
                     target_language=lang,
                     source_language=config.source_language if config.source_language != "auto" else None,
+                    translation_mode=config.translation_mode,
                 )
                 job.translations[lang] = translated
                 # Count segments where translation fell back to source text

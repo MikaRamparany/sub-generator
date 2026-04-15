@@ -49,6 +49,7 @@ class JobConfig(BaseModel):
     target_languages: list[str] = Field(default_factory=list)
     output_formats: list[str] = Field(default_factory=lambda: ["srt", "vtt"])
     quality_mode: str = "fast"
+    translation_mode: str = "fast"  # "fast" | "safe" — controls batch size and retry patience
 
 
 class JobStatus(BaseModel):

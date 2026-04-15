@@ -44,6 +44,7 @@ export interface JobConfig {
   target_languages: string[];
   output_formats: string[];
   quality_mode: "fast" | "high_quality";
+  translation_mode: "fast" | "safe";
 }
 
 export interface JobStatus {

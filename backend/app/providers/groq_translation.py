@@ -21,13 +21,19 @@ LANGUAGE_NAMES = {
     "ar": "Arabic",
 }
 
-BATCH_SIZE = 10  # Keep small — LLM output gets truncated with larger batches
 MAX_TOKENS = 2048  # Enough for 10 translated segments in verbose languages
 
 _RETRYABLE_STATUS = {502, 503, 504}
-_MAX_RETRIES = 4
-_RETRY_BACKOFF = [3, 6, 15, 30]  # seconds — generous for rate limits
-_INTER_BATCH_DELAY = 1.5  # seconds between batches to avoid rate limits
+
+# Per-mode settings — fast is the default, safe is for long files / rate-limit-prone jobs
+_MODE_BATCH_SIZE = {"fast": 10, "safe": 5}
+_MODE_INTER_BATCH_DELAY = {"fast": 1.5, "safe": 4.0}  # seconds between batches
+_MODE_MAX_RETRIES = {"fast": 4, "safe": 5}
+_MODE_RETRY_BACKOFF = {
+    "fast": [3, 6, 15, 30],          # 4 attempts
+    "safe": [5, 12, 25, 60, 120],    # 5 attempts — much more patient on 429s
+}
+_MODE_PRE_BATCH_DELAY = {"fast": 0.0, "safe": 2.0}  # extra delay before first batch in safe mode
 
 
 def _extract_json_from_content(content: str) -> str:
@@ -61,25 +67,43 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
         segments: list[SubtitleSegment],
         target_language: str,
         source_language: str | None = None,
+        translation_mode: str = "fast",
     ) -> list[TranslatedSubtitleSegment]:
-        """Translate segments using Groq LLM API, batch by batch."""
+        """Translate segments using Groq LLM API, batch by batch.
+
+        translation_mode:
+          - "fast": batch_size=10, 1.5s inter-batch delay — good for short files
+          - "safe": batch_size=5, 4s inter-batch delay, longer retries — for long films
+        """
         if not settings.groq_api_key:
             raise RuntimeError("GROQ_API_KEY is not configured")
 
+        mode = translation_mode if translation_mode in _MODE_BATCH_SIZE else "fast"
+        batch_size = _MODE_BATCH_SIZE[mode]
+        inter_batch_delay = _MODE_INTER_BATCH_DELAY[mode]
+        pre_batch_delay = _MODE_PRE_BATCH_DELAY[mode]
+
         lang_name = LANGUAGE_NAMES.get(target_language, target_language)
-        logger.info(f"Translating {len(segments)} segments to {lang_name}")
+        logger.info(
+            f"Translating {len(segments)} segments to {lang_name} "
+            f"(mode={mode}, batch_size={batch_size})"
+        )
+
+        # In safe mode, add a delay before the very first batch too
+        if pre_batch_delay > 0:
+            await asyncio.sleep(pre_batch_delay)
 
         all_translated: list[TranslatedSubtitleSegment] = []
 
-        for batch_idx, batch_start in enumerate(range(0, len(segments), BATCH_SIZE)):
-            batch = segments[batch_start : batch_start + BATCH_SIZE]
+        for batch_idx, batch_start in enumerate(range(0, len(segments), batch_size)):
+            batch = segments[batch_start : batch_start + batch_size]
 
             # Rate-limit: pause between batches (not before the first one)
             if batch_idx > 0:
-                await asyncio.sleep(_INTER_BATCH_DELAY)
+                await asyncio.sleep(inter_batch_delay)
 
             translated_batch = await self._translate_batch_safe(
-                batch, target_language, lang_name, source_language
+                batch, target_language, lang_name, source_language, mode
             )
             all_translated.extend(translated_batch)
 
@@ -92,11 +116,13 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
         target_language: str,
         lang_name: str,
         source_language: str | None,
+        mode: str = "fast",
     ) -> list[TranslatedSubtitleSegment]:
         """Translate a batch, splitting in half on truncation, falling back to source on error."""
+        inter_batch_delay = _MODE_INTER_BATCH_DELAY[mode]
         try:
             return await self._translate_batch(
-                segments, target_language, lang_name, source_language
+                segments, target_language, lang_name, source_language, mode
             )
         except _TruncatedResponseError:
             # Output was truncated — split batch in half and retry each part
@@ -112,13 +138,13 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
                 f"Translation truncated for {len(segments)} segments "
                 f"— splitting into {mid} + {len(segments) - mid} and retrying"
             )
-            await asyncio.sleep(_INTER_BATCH_DELAY)
+            await asyncio.sleep(inter_batch_delay)
             first = await self._translate_batch_safe(
-                segments[:mid], target_language, lang_name, source_language
+                segments[:mid], target_language, lang_name, source_language, mode
             )
-            await asyncio.sleep(_INTER_BATCH_DELAY)
+            await asyncio.sleep(inter_batch_delay)
             second = await self._translate_batch_safe(
-                segments[mid:], target_language, lang_name, source_language
+                segments[mid:], target_language, lang_name, source_language, mode
             )
             return first + second
         except RuntimeError as e:
@@ -135,6 +161,7 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
         target_language: str,
         lang_name: str,
         source_language: str | None,
+        mode: str = "fast",
     ) -> list[TranslatedSubtitleSegment]:
         model = settings.groq_translation_model
         segments_data = [{"id": s.id, "text": s.text} for s in segments]
@@ -175,7 +202,7 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
             "max_tokens": MAX_TOKENS,
         }
 
-        response = await self._request_with_retry(payload)
+        response = await self._request_with_retry(payload, mode)
         body = response.json()
         choice = body["choices"][0]
 
@@ -259,9 +286,12 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
             for seg in segments
         ]
 
-    async def _request_with_retry(self, payload: dict) -> httpx.Response:
+    async def _request_with_retry(self, payload: dict, mode: str = "fast") -> httpx.Response:
         """POST to Groq with retry on transient errors and 429 rate limits."""
-        for attempt in range(_MAX_RETRIES + 1):
+        max_retries = _MODE_MAX_RETRIES[mode]
+        backoff = _MODE_RETRY_BACKOFF[mode]
+
+        for attempt in range(max_retries + 1):
             try:
                 async with httpx.AsyncClient(timeout=120) as client:
                     response = await client.post(
@@ -273,26 +303,26 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
                         json=payload,
                     )
             except (httpx.TransportError, httpx.TimeoutException) as e:
-                if attempt < _MAX_RETRIES:
-                    wait = _RETRY_BACKOFF[attempt]
+                if attempt < max_retries:
+                    wait = backoff[attempt]
                     logger.warning(
                         f"Translation network error: {type(e).__name__}: {e} "
-                        f"(attempt {attempt + 1}/{_MAX_RETRIES + 1}) — retrying in {wait}s"
+                        f"(attempt {attempt + 1}/{max_retries + 1}) — retrying in {wait}s"
                     )
                     await asyncio.sleep(wait)
                     continue
                 raise RuntimeError(
-                    f"Translation failed after {_MAX_RETRIES + 1} attempts: "
+                    f"Translation failed after {max_retries + 1} attempts: "
                     f"{type(e).__name__}: {e or 'connection lost'}"
                 )
 
             # Retryable HTTP status codes (server errors + rate limit)
             if response.status_code in _RETRYABLE_STATUS or response.status_code == 429:
-                if attempt < _MAX_RETRIES:
-                    wait = _RETRY_BACKOFF[attempt]
+                if attempt < max_retries:
+                    wait = backoff[attempt]
                     logger.warning(
                         f"Translation API returned {response.status_code} "
-                        f"(attempt {attempt + 1}/{_MAX_RETRIES + 1}) — retrying in {wait}s"
+                        f"(attempt {attempt + 1}/{max_retries + 1}) — retrying in {wait}s"
                     )
                     await asyncio.sleep(wait)
                     continue

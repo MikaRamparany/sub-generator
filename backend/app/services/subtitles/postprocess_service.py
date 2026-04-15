@@ -9,6 +9,12 @@ from app.models.schemas import SubtitleSegment
 MIN_SEGMENT_DURATION = 0.3  # seconds
 MAX_GAP_FOR_MERGE = 0.15  # seconds
 
+# Hard cap on display duration (Netflix standard: 7s max per card)
+_MAX_DISPLAY_DURATION = 7.0
+# Reading speed for natural duration estimation
+_CHARS_PER_SECOND = 20.0
+_MIN_DISPLAY_DURATION = 1.5  # minimum comfortable reading time
+
 # Whisper hallucination patterns — these appear on silent/music sections
 _HALLUCINATION_PATTERNS = [
     re.compile(r"^thank(s| you)?\s*(for\s*(watching|listening|viewing))?\s*[.!]*$", re.IGNORECASE),
@@ -17,6 +23,10 @@ _HALLUCINATION_PATTERNS = [
     re.compile(r"^(see you|bye|goodbye)\s*(next time|in the next)?\s*[.!]*$", re.IGNORECASE),
     re.compile(r"^\.*$"),  # just dots
     re.compile(r"^♪+$"),  # just music notes
+    re.compile(r"^(www\.|https?://)\S+", re.IGNORECASE),  # URLs
+    re.compile(r"^(subtitles?|captions?|translation|transcript)\s*(by|:|from|made)", re.IGNORECASE),  # credit lines
+    re.compile(r"^(downloaded|synced?|corrected?|encoded?)\s+(by|from|at|with)\s+", re.IGNORECASE),  # rip tags
+    re.compile(r"^[\s♪\-_=*#.]{1,4}$"),  # only decorative chars (1–4)
 ]
 
 # Annotations Whisper sometimes inserts — not actual speech
@@ -54,6 +64,7 @@ def clean_segments(segments: list[SubtitleSegment]) -> list[SubtitleSegment]:
     result = fix_invalid_durations(result)
     result = sort_chronologically(result)
     result = fix_overlaps(result)
+    result = cap_display_duration(result)
     result = deduplicate_boundary_segments(result)
     result = merge_short_segments(result)
     result = split_multi_speaker(result)
@@ -179,6 +190,36 @@ def split_multi_speaker(segments: list[SubtitleSegment]) -> list[SubtitleSegment
 
     if split_count:
         logger.info(f"Added line breaks to {split_count} multi-speaker segment(s)")
+    return result
+
+
+def cap_display_duration(segments: list[SubtitleSegment]) -> list[SubtitleSegment]:
+    """Cap segment display time to a readable maximum (Netflix standard: 7s).
+
+    Only trims segments where current duration significantly exceeds the time
+    needed to read the text. This avoids cutting short subtitles that are
+    legitimately long (dense speech), while fixing segments that are "stuck"
+    on screen well beyond their readable duration.
+    """
+    result = []
+    capped = 0
+    for s in segments:
+        current = s.end - s.start
+        if current <= _MAX_DISPLAY_DURATION:
+            result.append(s)
+            continue
+        # Natural reading time: at least MIN, then chars-based
+        chars = len(s.text.replace("\n", " ").strip())
+        natural = max(_MIN_DISPLAY_DURATION, chars / _CHARS_PER_SECOND)
+        # Only cap if duration is well beyond readable (>50% over hard max)
+        if current > _MAX_DISPLAY_DURATION and current > natural * 1.5:
+            new_end = s.start + min(_MAX_DISPLAY_DURATION, max(natural, _MAX_DISPLAY_DURATION))
+            result.append(SubtitleSegment(id=s.id, start=s.start, end=s.start + _MAX_DISPLAY_DURATION, text=s.text))
+            capped += 1
+        else:
+            result.append(s)
+    if capped:
+        logger.info(f"Capped display duration on {capped} segment(s) to max {_MAX_DISPLAY_DURATION}s")
     return result
 
 

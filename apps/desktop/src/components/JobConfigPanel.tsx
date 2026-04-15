@@ -17,6 +17,7 @@ export function JobConfigPanel({ probe, videoPath, subtitlePath, onStart, disabl
   const [targetLanguages, setTargetLanguages] = useState<string[]>([]);
   const [outputFormats, setOutputFormats] = useState<string[]>(["srt", "vtt"]);
   const [qualityMode, setQualityMode] = useState<"fast" | "high_quality">("fast");
+  const [translationMode, setTranslationMode] = useState<"fast" | "safe">("fast");
 
   const toggleLang = (code: string) => {
     setTargetLanguages((prev) =>
@@ -42,6 +43,7 @@ export function JobConfigPanel({ probe, videoPath, subtitlePath, onStart, disabl
       target_languages: targetLanguages,
       output_formats: outputFormats,
       quality_mode: qualityMode,
+      translation_mode: translationMode,
     });
   };
 
@@ -139,6 +141,34 @@ export function JobConfigPanel({ probe, videoPath, subtitlePath, onStart, disabl
                 disabled={disabled}
               />
               High Quality
+            </label>
+          </div>
+        </div>
+      )}
+
+      {targetLanguages.length > 0 && (
+        <div className="config-section">
+          <label>Translation Mode</label>
+          <div className="radio-group">
+            <label className="radio-label">
+              <input
+                type="radio"
+                name="translation_mode"
+                checked={translationMode === "fast"}
+                onChange={() => setTranslationMode("fast")}
+                disabled={disabled}
+              />
+              Fast
+            </label>
+            <label className="radio-label">
+              <input
+                type="radio"
+                name="translation_mode"
+                checked={translationMode === "safe"}
+                onChange={() => setTranslationMode("safe")}
+                disabled={disabled}
+              />
+              Safe <span className="hint">(long films — slower, fewer rate-limit failures)</span>
             </label>
           </div>
         </div>
