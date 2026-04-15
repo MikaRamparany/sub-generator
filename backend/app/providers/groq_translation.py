@@ -25,15 +25,19 @@ MAX_TOKENS = 2048  # Enough for 10 translated segments in verbose languages
 
 _RETRYABLE_STATUS = {502, 503, 504}
 
-# Per-mode settings — fast is the default, safe is for long files / rate-limit-prone jobs
-_MODE_BATCH_SIZE = {"fast": 10, "safe": 5}
-_MODE_INTER_BATCH_DELAY = {"fast": 1.5, "safe": 4.0}  # seconds between batches
-_MODE_MAX_RETRIES = {"fast": 4, "safe": 5}
+# Per-mode settings
+# fast     — default, short files, low 429 risk
+# balanced — recommended for long films: moderate batch + delay, fails fast on persistent 429
+# safe     — maximum patience, very long files where quality > speed
+_MODE_BATCH_SIZE        = {"fast": 10, "balanced": 7,  "safe": 5}
+_MODE_INTER_BATCH_DELAY = {"fast": 1.5, "balanced": 3.0, "safe": 4.0}   # seconds between batches
+_MODE_PRE_BATCH_DELAY   = {"fast": 0.0, "balanced": 1.0, "safe": 2.0}   # delay before first batch
+_MODE_MAX_RETRIES       = {"fast": 4,   "balanced": 3,   "safe": 5}
 _MODE_RETRY_BACKOFF = {
-    "fast": [3, 6, 15, 30],          # 4 attempts
-    "safe": [5, 12, 25, 60, 120],    # 5 attempts — much more patient on 429s
+    "fast":     [3, 6, 15, 30],        # max wait before fallback: 54s
+    "balanced": [5, 15, 30],           # max wait before fallback: 50s — fail fast, move on
+    "safe":     [5, 12, 25, 60, 120],  # max wait before fallback: 222s — very patient
 }
-_MODE_PRE_BATCH_DELAY = {"fast": 0.0, "safe": 2.0}  # extra delay before first batch in safe mode
 
 
 def _extract_json_from_content(content: str) -> str:

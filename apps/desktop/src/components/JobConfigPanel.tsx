@@ -17,7 +17,7 @@ export function JobConfigPanel({ probe, videoPath, subtitlePath, onStart, disabl
   const [targetLanguages, setTargetLanguages] = useState<string[]>([]);
   const [outputFormats, setOutputFormats] = useState<string[]>(["srt", "vtt"]);
   const [qualityMode, setQualityMode] = useState<"fast" | "high_quality">("fast");
-  const [translationMode, setTranslationMode] = useState<"fast" | "safe">("fast");
+  const [translationMode, setTranslationMode] = useState<"fast" | "balanced" | "safe">("fast");
 
   const toggleLang = (code: string) => {
     setTargetLanguages((prev) =>
@@ -164,11 +164,21 @@ export function JobConfigPanel({ probe, videoPath, subtitlePath, onStart, disabl
               <input
                 type="radio"
                 name="translation_mode"
+                checked={translationMode === "balanced"}
+                onChange={() => setTranslationMode("balanced")}
+                disabled={disabled}
+              />
+              Balanced <span className="hint">(recommandé pour les longs films)</span>
+            </label>
+            <label className="radio-label">
+              <input
+                type="radio"
+                name="translation_mode"
                 checked={translationMode === "safe"}
                 onChange={() => setTranslationMode("safe")}
                 disabled={disabled}
               />
-              Safe <span className="hint">(long films — slower, fewer rate-limit failures)</span>
+              Safe <span className="hint">(très patient, mais lent)</span>
             </label>
           </div>
         </div>
