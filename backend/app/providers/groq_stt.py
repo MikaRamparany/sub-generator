@@ -53,16 +53,32 @@ class GroqSTTProvider(SpeechToTextProvider):
             data["temperature"] = "0"
 
         response: httpx.Response | None = None
+        last_error: Exception | None = None
         for attempt in range(_MAX_RETRIES + 1):
-            async with httpx.AsyncClient(timeout=300) as client:
-                with open(audio_path, "rb") as f:
-                    files = {"file": (audio_path.split("/")[-1], f, "audio/wav")}
-                    response = await client.post(
-                        GROQ_API_URL,
-                        headers={"Authorization": f"Bearer {settings.groq_api_key}"},
-                        data=data,
-                        files=files,
+            try:
+                async with httpx.AsyncClient(timeout=300) as client:
+                    with open(audio_path, "rb") as f:
+                        files = {"file": (audio_path.split("/")[-1], f, "audio/wav")}
+                        response = await client.post(
+                            GROQ_API_URL,
+                            headers={"Authorization": f"Bearer {settings.groq_api_key}"},
+                            data=data,
+                            files=files,
+                        )
+            except (httpx.TransportError, httpx.TimeoutException) as e:
+                last_error = e
+                if attempt < _MAX_RETRIES:
+                    wait = _RETRY_BACKOFF[attempt]
+                    logger.warning(
+                        f"Groq STT network error: {type(e).__name__}: {e} "
+                        f"(attempt {attempt + 1}/{_MAX_RETRIES + 1}) — retrying in {wait}s"
                     )
+                    await asyncio.sleep(wait)
+                    continue
+                raise RuntimeError(
+                    f"Groq STT failed after {_MAX_RETRIES + 1} attempts: "
+                    f"{type(e).__name__}: {e or 'connection lost'}"
+                )
 
             if response.status_code in _RETRYABLE_STATUS and attempt < _MAX_RETRIES:
                 wait = _RETRY_BACKOFF[attempt]

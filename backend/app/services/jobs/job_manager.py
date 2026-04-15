@@ -194,7 +194,8 @@ class JobManager:
             # Try to cleanup intermediates even on hard failure
             if audio_path:
                 self._cleanup_intermediates(audio_path, chunk_dir)
-            job.fail(str(e), "pipeline_error")
+            msg = str(e) or f"{type(e).__name__} (no details)"
+            job.fail(msg, "pipeline_error")
 
     def _generate_exports(
         self, job: Job, segments: list[SubtitleSegment], language: str
