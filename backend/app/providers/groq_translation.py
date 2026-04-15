@@ -22,6 +22,7 @@ LANGUAGE_NAMES = {
 }
 
 BATCH_SIZE = 10  # Keep small — LLM output gets truncated with larger batches
+MAX_TOKENS = 2048  # Enough for 10 translated segments in verbose languages
 
 _RETRYABLE_STATUS = {502, 503, 504}
 _MAX_RETRIES = 4
@@ -34,7 +35,6 @@ def _extract_json_from_content(content: str) -> str:
     content = content.strip()
     if content.startswith("```"):
         lines = content.split("\n")
-        # Drop first line (```json or ```) and last line (```)
         inner = lines[1:] if len(lines) > 1 else lines
         if inner and inner[-1].strip() == "```":
             inner = inner[:-1]
@@ -78,13 +78,56 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
             if batch_idx > 0:
                 await asyncio.sleep(_INTER_BATCH_DELAY)
 
-            translated_batch = await self._translate_batch(
+            translated_batch = await self._translate_batch_safe(
                 batch, target_language, lang_name, source_language
             )
             all_translated.extend(translated_batch)
 
         logger.info(f"Translation complete: {len(all_translated)} segments to {lang_name}")
         return all_translated
+
+    async def _translate_batch_safe(
+        self,
+        segments: list[SubtitleSegment],
+        target_language: str,
+        lang_name: str,
+        source_language: str | None,
+    ) -> list[TranslatedSubtitleSegment]:
+        """Translate a batch, splitting in half on truncation, falling back to source on error."""
+        try:
+            return await self._translate_batch(
+                segments, target_language, lang_name, source_language
+            )
+        except _TruncatedResponseError:
+            # Output was truncated — split batch in half and retry each part
+            if len(segments) <= 2:
+                logger.warning(
+                    f"Translation truncated even with {len(segments)} segments "
+                    f"— falling back to source text"
+                )
+                return self._fallback_to_source(segments, target_language)
+
+            mid = len(segments) // 2
+            logger.warning(
+                f"Translation truncated for {len(segments)} segments "
+                f"— splitting into {mid} + {len(segments) - mid} and retrying"
+            )
+            await asyncio.sleep(_INTER_BATCH_DELAY)
+            first = await self._translate_batch_safe(
+                segments[:mid], target_language, lang_name, source_language
+            )
+            await asyncio.sleep(_INTER_BATCH_DELAY)
+            second = await self._translate_batch_safe(
+                segments[mid:], target_language, lang_name, source_language
+            )
+            return first + second
+        except RuntimeError as e:
+            # Any other translation error — log and fall back to source text
+            logger.warning(
+                f"Translation batch failed ({len(segments)} segments, "
+                f"lang={target_language}): {e} — using source text as fallback"
+            )
+            return self._fallback_to_source(segments, target_language)
 
     async def _translate_batch(
         self,
@@ -122,19 +165,26 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0.3,
-            "max_tokens": 1024,
+            "max_tokens": MAX_TOKENS,
         }
 
         response = await self._request_with_retry(payload)
+        body = response.json()
+        choice = body["choices"][0]
 
-        raw_content = response.json()["choices"][0]["message"]["content"]
+        # Detect truncation before parsing JSON
+        if choice.get("finish_reason") == "length":
+            raise _TruncatedResponseError("Response truncated by max_tokens limit")
+
+        raw_content = choice["message"]["content"]
         json_str = _extract_json_from_content(raw_content)
 
         try:
             parsed = json.loads(json_str)
         except json.JSONDecodeError as e:
-            raise RuntimeError(
-                f"Translation response is not valid JSON: {e} — "
+            # Truncation can also manifest as invalid JSON without finish_reason=length
+            raise _TruncatedResponseError(
+                f"Translation response is not valid JSON (likely truncated): {e} — "
                 f"raw: {json_str[:200]}"
             )
 
@@ -168,10 +218,6 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
         for seg in segments:
             if seg.id not in translation_map:
                 missing += 1
-                logger.warning(
-                    f"No translation returned for segment id={seg.id} "
-                    f"(lang={target_language}) — using source text as fallback"
-                )
             result.append(
                 TranslatedSubtitleSegment(
                     id=seg.id,
@@ -189,6 +235,22 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
             )
 
         return result
+
+    def _fallback_to_source(
+        self, segments: list[SubtitleSegment], target_language: str
+    ) -> list[TranslatedSubtitleSegment]:
+        """Return segments with source text as fallback translation."""
+        return [
+            TranslatedSubtitleSegment(
+                id=seg.id,
+                start=seg.start,
+                end=seg.end,
+                source_text=seg.text,
+                translated_text=seg.text,
+                target_language=target_language,
+            )
+            for seg in segments
+        ]
 
     async def _request_with_retry(self, payload: dict) -> httpx.Response:
         """POST to Groq with retry on transient errors and 429 rate limits."""
@@ -237,5 +299,9 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
 
             return response
 
-        # Should not reach here, but satisfy type checker
         raise RuntimeError("Translation request failed unexpectedly")
+
+
+class _TruncatedResponseError(Exception):
+    """Internal: raised when the LLM output is truncated by max_tokens."""
+    pass
