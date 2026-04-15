@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import shutil
 import uuid
 from pathlib import Path
@@ -156,9 +157,10 @@ class JobManager:
             # (chunks + raw audio) — keeps only the export_dir
             self._cleanup_intermediates(audio_path, chunk_dir)
 
-            # Step 6: Translate
+            # Step 6: Translate (with cooldown to let Groq rate limits reset)
             if config.target_languages:
-                job.update("translating", 0.7, "Translating subtitles...")
+                job.update("translating", 0.7, "Waiting before translation (rate limit cooldown)...")
+                await asyncio.sleep(5)
                 total_langs = len(config.target_languages)
 
                 for i, lang in enumerate(config.target_languages):

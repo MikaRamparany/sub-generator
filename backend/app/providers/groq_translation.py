@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
@@ -21,6 +22,11 @@ LANGUAGE_NAMES = {
 }
 
 BATCH_SIZE = 10  # Keep small — LLM output gets truncated with larger batches
+
+_RETRYABLE_STATUS = {502, 503, 504}
+_MAX_RETRIES = 4
+_RETRY_BACKOFF = [3, 6, 15, 30]  # seconds — generous for rate limits
+_INTER_BATCH_DELAY = 1.5  # seconds between batches to avoid rate limits
 
 
 def _extract_json_from_content(content: str) -> str:
@@ -65,8 +71,13 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
 
         all_translated: list[TranslatedSubtitleSegment] = []
 
-        for batch_start in range(0, len(segments), BATCH_SIZE):
+        for batch_idx, batch_start in enumerate(range(0, len(segments), BATCH_SIZE)):
             batch = segments[batch_start : batch_start + BATCH_SIZE]
+
+            # Rate-limit: pause between batches (not before the first one)
+            if batch_idx > 0:
+                await asyncio.sleep(_INTER_BATCH_DELAY)
+
             translated_batch = await self._translate_batch(
                 batch, target_language, lang_name, source_language
             )
@@ -98,37 +109,23 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
             f"Segments:\n{json.dumps(segments_data, ensure_ascii=False)}"
         )
 
-        async with httpx.AsyncClient(timeout=120) as client:
-            response = await client.post(
-                GROQ_CHAT_URL,
-                headers={
-                    "Authorization": f"Bearer {settings.groq_api_key}",
-                    "Content-Type": "application/json",
+        payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a professional subtitle translator. "
+                        "You output only valid JSON arrays."
+                    ),
                 },
-                json={
-                    "model": model,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": (
-                                "You are a professional subtitle translator. "
-                                "You output only valid JSON arrays."
-                            ),
-                        },
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": 0.3,
-                    # Enough tokens for 10 translated segments (avg ~50 chars each + JSON structure)
-                    "max_tokens": 1024,
-                },
-            )
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.3,
+            "max_tokens": 1024,
+        }
 
-        if response.status_code == 429:
-            raise RuntimeError("API rate limit reached during translation.")
-        if response.status_code != 200:
-            raise RuntimeError(
-                f"Groq translation API error {response.status_code}: {response.text[:300]}"
-            )
+        response = await self._request_with_retry(payload)
 
         raw_content = response.json()["choices"][0]["message"]["content"]
         json_str = _extract_json_from_content(raw_content)
@@ -192,3 +189,53 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
             )
 
         return result
+
+    async def _request_with_retry(self, payload: dict) -> httpx.Response:
+        """POST to Groq with retry on transient errors and 429 rate limits."""
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                async with httpx.AsyncClient(timeout=120) as client:
+                    response = await client.post(
+                        GROQ_CHAT_URL,
+                        headers={
+                            "Authorization": f"Bearer {settings.groq_api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json=payload,
+                    )
+            except (httpx.TransportError, httpx.TimeoutException) as e:
+                if attempt < _MAX_RETRIES:
+                    wait = _RETRY_BACKOFF[attempt]
+                    logger.warning(
+                        f"Translation network error: {type(e).__name__}: {e} "
+                        f"(attempt {attempt + 1}/{_MAX_RETRIES + 1}) — retrying in {wait}s"
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+                raise RuntimeError(
+                    f"Translation failed after {_MAX_RETRIES + 1} attempts: "
+                    f"{type(e).__name__}: {e or 'connection lost'}"
+                )
+
+            # Retryable HTTP status codes (server errors + rate limit)
+            if response.status_code in _RETRYABLE_STATUS or response.status_code == 429:
+                if attempt < _MAX_RETRIES:
+                    wait = _RETRY_BACKOFF[attempt]
+                    logger.warning(
+                        f"Translation API returned {response.status_code} "
+                        f"(attempt {attempt + 1}/{_MAX_RETRIES + 1}) — retrying in {wait}s"
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+
+            if response.status_code == 429:
+                raise RuntimeError("API rate limit reached during translation (exhausted retries).")
+            if response.status_code != 200:
+                raise RuntimeError(
+                    f"Groq translation API error {response.status_code}: {response.text[:300]}"
+                )
+
+            return response
+
+        # Should not reach here, but satisfy type checker
+        raise RuntimeError("Translation request failed unexpectedly")
