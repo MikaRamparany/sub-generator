@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 
 from app.core.config import settings
@@ -8,6 +10,10 @@ from app.models.schemas import SubtitleSegment
 from app.providers.base import SpeechToTextProvider
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+
+_RETRYABLE_STATUS = {502, 503, 504}
+_MAX_RETRIES = 3
+_RETRY_BACKOFF = [2, 5, 10]  # seconds between attempts
 
 
 class GroqSTTProvider(SpeechToTextProvider):
@@ -46,16 +52,29 @@ class GroqSTTProvider(SpeechToTextProvider):
             # Deterministic decoding — higher accuracy, slower
             data["temperature"] = "0"
 
-        async with httpx.AsyncClient(timeout=300) as client:
-            with open(audio_path, "rb") as f:
-                files = {"file": (audio_path.split("/")[-1], f, "audio/wav")}
-                response = await client.post(
-                    GROQ_API_URL,
-                    headers={"Authorization": f"Bearer {settings.groq_api_key}"},
-                    data=data,
-                    files=files,
-                )
+        response: httpx.Response | None = None
+        for attempt in range(_MAX_RETRIES + 1):
+            async with httpx.AsyncClient(timeout=300) as client:
+                with open(audio_path, "rb") as f:
+                    files = {"file": (audio_path.split("/")[-1], f, "audio/wav")}
+                    response = await client.post(
+                        GROQ_API_URL,
+                        headers={"Authorization": f"Bearer {settings.groq_api_key}"},
+                        data=data,
+                        files=files,
+                    )
 
+            if response.status_code in _RETRYABLE_STATUS and attempt < _MAX_RETRIES:
+                wait = _RETRY_BACKOFF[attempt]
+                logger.warning(
+                    f"Groq STT returned {response.status_code} "
+                    f"(attempt {attempt + 1}/{_MAX_RETRIES + 1}) — retrying in {wait}s"
+                )
+                await asyncio.sleep(wait)
+                continue
+            break
+
+        assert response is not None
         if response.status_code == 429:
             raise RuntimeError("API rate limit reached. Please wait and try again.")
         if response.status_code != 200:
