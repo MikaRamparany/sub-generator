@@ -45,6 +45,6 @@ def translated_segments_to_subtitle_segments(
 def write_subtitle_file(content: str, output_path: str) -> str:
     """Write subtitle content to file."""
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "w", encoding="utf-8") as f:
+    with open(output_path, "w", encoding="utf-8", newline="\n") as f:
         f.write(content)
     return output_path

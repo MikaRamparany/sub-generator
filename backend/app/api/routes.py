@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import io
+import zipfile
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from app.core.logging import logger
 from app.models.schemas import (
@@ -17,11 +19,10 @@ from app.models.schemas import (
 )
 from app.services.jobs.job_manager import JobManager
 from app.services.media.probe_service import probe_video
-from app.utils.filesystem import validate_video_path
+from app.utils.filesystem import get_video_base_name, validate_video_path
 
 router = APIRouter(prefix="/api")
 
-# Job manager instance - initialized in main.py
 _job_manager: JobManager | None = None
 
 
@@ -64,9 +65,7 @@ async def create_job(config: JobConfig, background_tasks: BackgroundTasks):
 
     jm = get_job_manager()
     job_id = jm.create_job(config)
-
     background_tasks.add_task(jm.run_job, job_id)
-
     return {"job_id": job_id}
 
 
@@ -102,6 +101,37 @@ async def get_job_downloads(job_id: str):
         for f in job.export_files
     ]
     return DownloadListResponse(files=public_files)
+
+
+# NOTE: this route MUST be declared before /downloads/{file_name}
+# so that "zip" is not captured as a file_name parameter.
+@router.get("/jobs/{job_id}/downloads/zip")
+async def download_zip(job_id: str):
+    """Stream all export files for a job as a single zip archive."""
+    jm = get_job_manager()
+    job = jm.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    available = [f for f in job.export_files if Path(f.file_path).exists()]
+    if not available:
+        raise HTTPException(status_code=404, detail="No export files available")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for export in available:
+            zf.write(export.file_path, arcname=export.file_name)
+
+    buf.seek(0)
+    base_name = get_video_base_name(job.config.input_video_path)
+    zip_name = f"{base_name}.subtitles.zip"
+
+    logger.info(f"[Job {job_id}] Serving zip: {zip_name} ({len(available)} files)")
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{zip_name}"'},
+    )
 
 
 @router.get("/jobs/{job_id}/downloads/{file_name}")
