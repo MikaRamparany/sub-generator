@@ -12,21 +12,22 @@ vi.mock("../lib/tauri", () => ({
 // Mock the API
 vi.mock("../services/api", () => ({
   probeVideo: vi.fn(),
+  probeSubtitle: vi.fn(),
 }));
 
 describe("VideoImport", () => {
   it("renders the drop zone", () => {
-    render(<VideoImport onProbeComplete={vi.fn()} />);
-    expect(screen.getByText(/Drop a video here/i)).toBeInTheDocument();
+    render(<VideoImport onProbeComplete={vi.fn()} onSubtitleImport={vi.fn()} />);
+    expect(screen.getByText(/Drop a video or subtitle file/i)).toBeInTheDocument();
   });
 
   it("lists supported formats", () => {
-    render(<VideoImport onProbeComplete={vi.fn()} />);
+    render(<VideoImport onProbeComplete={vi.fn()} onSubtitleImport={vi.fn()} />);
     expect(screen.getByText(/MP4.*MOV.*MKV.*AVI.*WEBM/i)).toBeInTheDocument();
   });
 
   it("shows browser mode warning when not in Tauri", () => {
-    render(<VideoImport onProbeComplete={vi.fn()} />);
+    render(<VideoImport onProbeComplete={vi.fn()} onSubtitleImport={vi.fn()} />);
     expect(screen.getByText(/Browser mode/i)).toBeInTheDocument();
     expect(screen.getByText(/npm run tauri dev/i)).toBeInTheDocument();
   });

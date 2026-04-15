@@ -2,19 +2,22 @@ import { useCallback, useEffect, useState } from "react";
 import { DownloadsPanel } from "./components/DownloadsPanel";
 import { JobConfigPanel } from "./components/JobConfigPanel";
 import { ProgressBar } from "./components/ProgressBar";
+import { SubtitleInfo } from "./components/SubtitleInfo";
 import { SubtitlePreview } from "./components/SubtitlePreview";
 import { VideoImport } from "./components/VideoImport";
 import { VideoInfo } from "./components/VideoInfo";
 import { useJobPolling } from "./hooks/useJobPolling";
 import { createJob, deleteJob } from "./services/api";
-import type { JobConfig, ProbeResult } from "./types";
+import type { JobConfig, ProbeResult, SubtitleFileInfo } from "./types";
 
 type AppStep = "import" | "configure" | "processing" | "done" | "failed";
 
 export default function App() {
   const [step, setStep] = useState<AppStep>("import");
   const [probe, setProbe] = useState<ProbeResult | null>(null);
+  const [subtitleInfo, setSubtitleInfo] = useState<SubtitleFileInfo | null>(null);
   const [videoPath, setVideoPath] = useState("");
+  const [subtitlePath, setSubtitlePath] = useState("");
   const [jobId, setJobId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -32,7 +35,18 @@ export default function App() {
 
   const handleProbeComplete = useCallback((result: ProbeResult, path: string) => {
     setProbe(result);
+    setSubtitleInfo(null);
     setVideoPath(path);
+    setSubtitlePath("");
+    setStep("configure");
+    setError(null);
+  }, []);
+
+  const handleSubtitleImport = useCallback((info: SubtitleFileInfo, path: string) => {
+    setSubtitleInfo(info);
+    setProbe(null);
+    setVideoPath("");
+    setSubtitlePath(path);
     setStep("configure");
     setError(null);
   }, []);
@@ -54,12 +68,21 @@ export default function App() {
     }
     setStep("import");
     setProbe(null);
+    setSubtitleInfo(null);
     setVideoPath("");
+    setSubtitlePath("");
     setJobId(null);
     setError(null);
   }, [jobId]);
 
   const showResults = step === "done" || step === "failed";
+  const isSubtitleMode = Boolean(subtitleInfo);
+
+  const renderFileInfo = () => {
+    if (probe) return <VideoInfo probe={probe} />;
+    if (subtitleInfo) return <SubtitleInfo info={subtitleInfo} />;
+    return null;
+  };
 
   return (
     <div className="app">
@@ -67,22 +90,26 @@ export default function App() {
         <h1>Subtitle Generator</h1>
         {step !== "import" && (
           <button className="btn-secondary" onClick={handleReset}>
-            New Video
+            New File
           </button>
         )}
       </header>
 
       <main className="app-main">
         {step === "import" && (
-          <VideoImport onProbeComplete={handleProbeComplete} />
+          <VideoImport
+            onProbeComplete={handleProbeComplete}
+            onSubtitleImport={handleSubtitleImport}
+          />
         )}
 
-        {step === "configure" && probe && (
+        {step === "configure" && (
           <>
-            <VideoInfo probe={probe} />
+            {renderFileInfo()}
             <JobConfigPanel
               probe={probe}
               videoPath={videoPath}
+              subtitlePath={subtitlePath || undefined}
               onStart={handleStart}
               disabled={false}
             />
@@ -91,14 +118,14 @@ export default function App() {
 
         {step === "processing" && (
           <>
-            {probe && <VideoInfo probe={probe} />}
+            {renderFileInfo()}
             {status && <ProgressBar status={status} />}
           </>
         )}
 
         {showResults && (
           <>
-            {probe && <VideoInfo probe={probe} />}
+            {renderFileInfo()}
             {status && <ProgressBar status={status} />}
             {step === "failed" && (
               <p className="hint" style={{ marginTop: 8 }}>

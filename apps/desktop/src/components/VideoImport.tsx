@@ -1,38 +1,47 @@
 import { useState } from "react";
 import { getAbsolutePathFromFile, isTauri, openVideoFileDialog } from "../lib/tauri";
-import { probeVideo } from "../services/api";
-import type { ProbeResult } from "../types";
-import { SUPPORTED_FORMATS } from "../types";
+import { probeSubtitle, probeVideo } from "../services/api";
+import type { ProbeResult, SubtitleFileInfo } from "../types";
+import { SUPPORTED_FORMATS, SUPPORTED_SUBTITLE_FORMATS } from "../types";
+
+const ALL_EXTENSIONS = [...SUPPORTED_FORMATS, ...SUPPORTED_SUBTITLE_FORMATS];
 
 interface Props {
   onProbeComplete: (result: ProbeResult, videoPath: string) => void;
+  onSubtitleImport: (info: SubtitleFileInfo, filePath: string) => void;
 }
 
-function hasValidExtension(filePath: string): boolean {
-  const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
-  return SUPPORTED_FORMATS.includes(ext);
+function getExtension(filePath: string): string {
+  return filePath.split(".").pop()?.toLowerCase() ?? "";
 }
 
-export function VideoImport({ onProbeComplete }: Props) {
+export function VideoImport({ onProbeComplete, onSubtitleImport }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
 
   const handleAbsolutePath = async (filePath: string) => {
     setError(null);
-    if (!hasValidExtension(filePath)) {
-      const ext = filePath.split(".").pop() ?? "unknown";
+    const ext = getExtension(filePath);
+
+    if (!ALL_EXTENSIONS.includes(ext)) {
       setError(
-        `Unsupported format: .${ext}. Supported: ${SUPPORTED_FORMATS.join(", ")}`
+        `Unsupported format: .${ext}. Supported: ${ALL_EXTENSIONS.join(", ")}`
       );
       return;
     }
+
     setLoading(true);
     try {
-      const result = await probeVideo(filePath);
-      onProbeComplete(result, filePath);
+      if (SUPPORTED_SUBTITLE_FORMATS.includes(ext)) {
+        const info = await probeSubtitle(filePath);
+        onSubtitleImport(info, filePath);
+      } else {
+        const result = await probeVideo(filePath);
+        onProbeComplete(result, filePath);
+      }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to analyze video");
+      setError(e instanceof Error ? e.message : "Failed to analyze file");
     } finally {
       setLoading(false);
     }
@@ -82,12 +91,13 @@ export function VideoImport({ onProbeComplete }: Props) {
         onClick={handleBrowseClick}
       >
         {loading ? (
-          <p>Analyzing video...</p>
+          <p>Analyzing file...</p>
         ) : (
           <>
             <p className="drop-icon">🎬</p>
-            <p>Drop a video here or click to browse</p>
-            <p className="hint">Supported: MP4, MOV, MKV, AVI, WEBM</p>
+            <p>Drop a video or subtitle file here, or click to browse</p>
+            <p className="hint">Video: MP4, MOV, MKV, AVI, WEBM</p>
+            <p className="hint">Subtitles: SRT, VTT (translation only)</p>
             {!isTauri() && (
               <p className="hint" style={{ color: "#f59e0b", marginTop: 8 }}>
                 ⚠ Browser mode — run with{" "}

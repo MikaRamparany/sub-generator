@@ -29,8 +29,16 @@ export interface TranslatedSubtitleSegment {
   target_language: string;
 }
 
+export interface SubtitleFileInfo {
+  file_name: string;
+  file_size_mb: number;
+  segment_count: number;
+  format: string;
+}
+
 export interface JobConfig {
   input_video_path: string;
+  input_subtitle_path?: string;
   audio_track_index: number;
   source_language: string;
   target_languages: string[];
@@ -64,6 +72,8 @@ export interface DownloadListResponse {
 
 export const SUPPORTED_FORMATS = ["mp4", "mov", "mkv", "avi", "webm"];
 
+export const SUPPORTED_SUBTITLE_FORMATS = ["srt", "vtt"];
+
 export const AVAILABLE_LANGUAGES = [
   { code: "fr", name: "Français" },
   { code: "en", name: "English" },
@@ -77,6 +87,7 @@ export const JOB_STATE_LABELS: Record<string, string> = {
   extracting_audio: "Extracting audio...",
   chunking_audio: "Splitting audio...",
   transcribing: "Transcribing...",
+  parsing_subtitles: "Parsing subtitles...",
   post_processing: "Cleaning up...",
   translating: "Translating...",
   completed: "Complete!",

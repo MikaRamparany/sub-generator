@@ -16,9 +16,11 @@ from app.models.schemas import (
     PreviewResponse,
     ProbeRequest,
     ProbeResult,
+    SubtitleFileInfo,
 )
 from app.services.jobs.job_manager import JobManager
 from app.services.media.probe_service import probe_video
+from app.services.subtitles.parse_service import parse_subtitle_file
 from app.utils.filesystem import get_video_base_name, validate_video_path
 
 router = APIRouter(prefix="/api")
@@ -56,12 +58,49 @@ async def probe(request: ProbeRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/subtitles/probe", response_model=SubtitleFileInfo)
+async def probe_subtitle(request: ProbeRequest):
+    """Probe a subtitle file (SRT/VTT) and return its metadata."""
+    file_path = request.video_path  # reuse ProbeRequest — field is just a path
+    path = Path(file_path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+    ext = path.suffix.lower()
+    if ext not in (".srt", ".vtt"):
+        raise HTTPException(status_code=400, detail=f"Not a subtitle file: {ext}")
+    try:
+        segments = parse_subtitle_file(file_path)
+        return SubtitleFileInfo(
+            file_name=path.name,
+            file_size_mb=path.stat().st_size / (1024 * 1024),
+            segment_count=len(segments),
+            format=ext.lstrip("."),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.post("/jobs")
 async def create_job(config: JobConfig, background_tasks: BackgroundTasks):
-    try:
-        validate_video_path(config.input_video_path)
-    except (FileNotFoundError, ValueError) as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    is_subtitle_import = bool(config.input_subtitle_path)
+    is_video_import = bool(config.input_video_path)
+
+    if not is_subtitle_import and not is_video_import:
+        raise HTTPException(
+            status_code=400,
+            detail="Either input_video_path or input_subtitle_path must be provided",
+        )
+
+    if is_video_import and not is_subtitle_import:
+        try:
+            validate_video_path(config.input_video_path)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    if is_subtitle_import:
+        path = Path(config.input_subtitle_path)
+        if not path.exists():
+            raise HTTPException(status_code=400, detail=f"File not found: {config.input_subtitle_path}")
 
     jm = get_job_manager()
     job_id = jm.create_job(config)
@@ -123,7 +162,8 @@ async def download_zip(job_id: str):
             zf.write(export.file_path, arcname=export.file_name)
 
     buf.seek(0)
-    base_name = get_video_base_name(job.config.input_video_path)
+    source_path = job.config.input_subtitle_path or job.config.input_video_path
+    base_name = get_video_base_name(source_path)
     zip_name = f"{base_name}.subtitles.zip"
 
     logger.info(f"[Job {job_id}] Serving zip: {zip_name} ({len(available)} files)")

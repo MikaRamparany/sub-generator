@@ -4,6 +4,7 @@ import type {
   JobStatus,
   PreviewResponse,
   ProbeResult,
+  SubtitleFileInfo,
 } from "../types";
 
 const BASE_URL = "/api";
@@ -29,6 +30,13 @@ export async function probeVideo(videoPath: string): Promise<ProbeResult> {
   return request<ProbeResult>("/videos/probe", {
     method: "POST",
     body: JSON.stringify({ video_path: videoPath }),
+  });
+}
+
+export async function probeSubtitle(filePath: string): Promise<SubtitleFileInfo> {
+  return request<SubtitleFileInfo>("/subtitles/probe", {
+    method: "POST",
+    body: JSON.stringify({ video_path: filePath }),
   });
 }
 

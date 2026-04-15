@@ -34,8 +34,16 @@ class TranslatedSubtitleSegment(BaseModel):
     target_language: str
 
 
+class SubtitleFileInfo(BaseModel):
+    file_name: str
+    file_size_mb: float
+    segment_count: int
+    format: str  # "srt" or "vtt"
+
+
 class JobConfig(BaseModel):
-    input_video_path: str
+    input_video_path: str = ""
+    input_subtitle_path: str = ""  # if set, skip STT and use this file
     audio_track_index: int = 0
     source_language: str = "auto"
     target_languages: list[str] = Field(default_factory=list)

@@ -27,8 +27,8 @@ export async function openVideoFileDialog(): Promise<string | null> {
     multiple: false,
     filters: [
       {
-        name: "Video",
-        extensions: ["mp4", "mov", "mkv", "avi", "webm"],
+        name: "Video & Subtitles",
+        extensions: ["mp4", "mov", "mkv", "avi", "webm", "srt", "vtt"],
       },
     ],
   });

@@ -23,6 +23,7 @@ from app.services.subtitles.export_service import (
     translated_segments_to_subtitle_segments,
     write_subtitle_file,
 )
+from app.services.subtitles.parse_service import parse_subtitle_file
 from app.services.subtitles.postprocess_service import clean_segments
 from app.utils.filesystem import (
     cleanup_directory,
@@ -75,7 +76,8 @@ class JobManager:
         job_id = str(uuid.uuid4())[:8]
         job = Job(job_id, config)
         self.jobs[job_id] = job
-        logger.info(f"Created job {job_id} for {config.input_video_path}")
+        source = config.input_subtitle_path or config.input_video_path
+        logger.info(f"Created job {job_id} for {source}")
         return job_id
 
     def get_job(self, job_id: str) -> Job | None:
@@ -94,6 +96,45 @@ class JobManager:
         if not job:
             return
 
+        config = job.config
+
+        if config.input_subtitle_path:
+            await self._run_subtitle_import_job(job)
+        else:
+            await self._run_video_job(job)
+
+    async def _run_subtitle_import_job(self, job: Job) -> None:
+        """Pipeline for imported subtitle files: parse → export → translate."""
+        config = job.config
+
+        try:
+            # Step 1: Parse subtitle file
+            job.update("parsing_subtitles", 0.2, "Parsing subtitle file...")
+            raw_segments = parse_subtitle_file(config.input_subtitle_path)
+
+            if not raw_segments:
+                job.fail("Subtitle file contains no segments", "empty_subtitles")
+                return
+
+            # Step 2: Light cleanup (no hallucination/dedup since it's user-provided)
+            job.update("post_processing", 0.4, "Processing segments...")
+            job.source_segments = raw_segments
+
+            # Step 3: Generate source exports
+            self._generate_exports(job, job.source_segments, "original")
+
+            # Step 4: Translate
+            await self._translate_phase(job, start_progress=0.5)
+
+            # Finalize
+            self._finalize(job)
+
+        except Exception as e:
+            msg = str(e) or f"{type(e).__name__} (no details)"
+            job.fail(msg, "pipeline_error")
+
+    async def _run_video_job(self, job: Job) -> None:
+        """Pipeline for video files: extract → transcribe → export → translate."""
         config = job.config
         audio_path: str | None = None
         chunk_dir: Path | None = None
@@ -154,56 +195,67 @@ class JobManager:
             self._generate_exports(job, job.source_segments, "original")
 
             # Cleanup intermediates now that exports are generated
-            # (chunks + raw audio) — keeps only the export_dir
             self._cleanup_intermediates(audio_path, chunk_dir)
 
-            # Step 6: Translate (with cooldown to let Groq rate limits reset)
-            if config.target_languages:
-                job.update("translating", 0.7, "Waiting before translation (rate limit cooldown)...")
-                await asyncio.sleep(5)
-                total_langs = len(config.target_languages)
+            # Step 6: Translate
+            await self._translate_phase(job, start_progress=0.7)
 
-                for i, lang in enumerate(config.target_languages):
-                    progress = 0.7 + (0.25 * (i / total_langs))
-                    job.update("translating", progress, f"Translating to {lang}...")
-
-                    try:
-                        translated = await self.translation_provider.translate_segments(
-                            job.source_segments,
-                            target_language=lang,
-                            source_language=config.source_language if config.source_language != "auto" else None,
-                        )
-                        job.translations[lang] = translated
-                        translated_as_segments = translated_segments_to_subtitle_segments(translated)
-                        self._generate_exports(job, translated_as_segments, lang)
-
-                    except Exception as e:
-                        job.record_translation_failure(lang, str(e))
-
-            # Finalize with accurate summary message
-            failed = job.status.failed_languages
-            if failed:
-                langs_str = ", ".join(failed)
-                job.update(
-                    "completed",
-                    1.0,
-                    f"Done with partial results — translation failed for: {langs_str}.",
-                )
-            else:
-                job.update("completed", 1.0, "All subtitles generated successfully.")
+            # Finalize
+            self._finalize(job)
 
         except Exception as e:
-            # Try to cleanup intermediates even on hard failure
             if audio_path:
                 self._cleanup_intermediates(audio_path, chunk_dir)
             msg = str(e) or f"{type(e).__name__} (no details)"
             job.fail(msg, "pipeline_error")
 
+    async def _translate_phase(self, job: Job, start_progress: float) -> None:
+        """Run translation for all target languages."""
+        config = job.config
+        if not config.target_languages:
+            return
+
+        # Cooldown to let Groq rate limits reset after STT
+        job.update("translating", start_progress, "Waiting before translation (rate limit cooldown)...")
+        await asyncio.sleep(5)
+
+        total_langs = len(config.target_languages)
+        for i, lang in enumerate(config.target_languages):
+            progress = start_progress + ((1.0 - start_progress - 0.05) * (i / total_langs))
+            job.update("translating", progress, f"Translating to {lang}...")
+
+            try:
+                translated = await self.translation_provider.translate_segments(
+                    job.source_segments,
+                    target_language=lang,
+                    source_language=config.source_language if config.source_language != "auto" else None,
+                )
+                job.translations[lang] = translated
+                translated_as_segments = translated_segments_to_subtitle_segments(translated)
+                self._generate_exports(job, translated_as_segments, lang)
+
+            except Exception as e:
+                job.record_translation_failure(lang, str(e))
+
+    def _finalize(self, job: Job) -> None:
+        """Set final completed state with appropriate message."""
+        failed = job.status.failed_languages
+        if failed:
+            langs_str = ", ".join(failed)
+            job.update(
+                "completed",
+                1.0,
+                f"Done with partial results — translation failed for: {langs_str}.",
+            )
+        else:
+            job.update("completed", 1.0, "All subtitles generated successfully.")
+
     def _generate_exports(
         self, job: Job, segments: list[SubtitleSegment], language: str
     ) -> None:
+        source_path = job.config.input_subtitle_path or job.config.input_video_path
         for fmt in job.config.output_formats:
-            filename = get_export_filename(job.config.input_video_path, language, fmt)
+            filename = get_export_filename(source_path, language, fmt)
             output_path = str(job.export_dir / filename)
 
             if fmt == "srt":
