@@ -21,17 +21,17 @@ LANGUAGE_NAMES = {
     "ar": "Arabic",
 }
 
-MAX_TOKENS = 2048  # Enough for 10 translated segments in verbose languages
-
 _RETRYABLE_STATUS = {502, 503, 504}
 
 # Per-mode settings
 # fast     — default, short files, low 429 risk
-# balanced — recommended for long films: moderate batch + delay, fails fast on persistent 429
+# balanced — recommended for long films: stays within ~6k TPM budget at 8s/batch
 # safe     — maximum patience, very long files where quality > speed
 _MODE_BATCH_SIZE        = {"fast": 10, "balanced": 7,  "safe": 5}
-_MODE_INTER_BATCH_DELAY = {"fast": 1.5, "balanced": 3.0, "safe": 4.0}   # seconds between batches
-_MODE_PRE_BATCH_DELAY   = {"fast": 0.0, "balanced": 1.0, "safe": 2.0}   # delay before first batch
+# balanced: 8s keeps throughput ≤ 6 req/min × ~800 tokens ≈ 4800 TPM — within free tier
+# safe: 12s is even more conservative
+_MODE_INTER_BATCH_DELAY = {"fast": 1.5, "balanced": 8.0, "safe": 12.0}  # seconds between batches
+_MODE_PRE_BATCH_DELAY   = {"fast": 0.0, "balanced": 2.0, "safe": 3.0}   # delay before first batch
 _MODE_MAX_RETRIES       = {"fast": 4,   "balanced": 3,   "safe": 5}
 _MODE_RETRY_BACKOFF = {
     "fast":     [3, 6, 15, 30],        # max wait before fallback: 54s
@@ -39,8 +39,17 @@ _MODE_RETRY_BACKOFF = {
     "safe":     [5, 12, 25, 60, 120],  # max wait before fallback: 222s — very patient
 }
 # After exhausting 429 retries on a batch, wait this long before the NEXT batch.
-# Without this, the next batch starts immediately into the same rate-limit wall.
 _MODE_RATE_LIMIT_RECOVERY = {"fast": 45, "balanced": 75, "safe": 120}  # seconds
+
+# Dynamic max_tokens per batch: ~110 tokens per segment for verbose languages (French, German…)
+# This avoids reserving 2048 tokens when 7 segments only need ~400, which burns TPM quota.
+_TOKENS_PER_SEGMENT = 110
+_MAX_TOKENS_FLOOR = 400
+_MAX_TOKENS_CAP = 2048
+
+
+def _max_tokens_for_batch(batch_size: int) -> int:
+    return max(_MAX_TOKENS_FLOOR, min(_MAX_TOKENS_CAP, batch_size * _TOKENS_PER_SEGMENT))
 
 
 def _parse_retry_after(response: httpx.Response) -> float | None:
@@ -244,7 +253,7 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0.3,
-            "max_tokens": MAX_TOKENS,
+            "max_tokens": _max_tokens_for_batch(len(segments)),
         }
 
         response = await self._request_with_retry(payload, mode)
