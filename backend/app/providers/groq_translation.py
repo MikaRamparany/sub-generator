@@ -38,6 +38,9 @@ _MODE_RETRY_BACKOFF = {
     "balanced": [5, 15, 30],           # max wait before fallback: 50s — fail fast, move on
     "safe":     [5, 12, 25, 60, 120],  # max wait before fallback: 222s — very patient
 }
+# After exhausting 429 retries on a batch, wait this long before the NEXT batch.
+# Without this, the next batch starts immediately into the same rate-limit wall.
+_MODE_RATE_LIMIT_RECOVERY = {"fast": 45, "balanced": 75, "safe": 120}  # seconds
 
 
 def _extract_json_from_content(content: str) -> str:
@@ -99,16 +102,33 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
 
         all_translated: list[TranslatedSubtitleSegment] = []
 
+        recovery_sleep = 0.0  # set when a batch hits 429 wall — applied before next batch
+
         for batch_idx, batch_start in enumerate(range(0, len(segments), batch_size)):
             batch = segments[batch_start : batch_start + batch_size]
 
-            # Rate-limit: pause between batches (not before the first one)
+            # Normal inter-batch delay (skip before first batch)
             if batch_idx > 0:
-                await asyncio.sleep(inter_batch_delay)
+                delay = recovery_sleep if recovery_sleep > 0 else inter_batch_delay
+                if recovery_sleep > 0:
+                    logger.warning(
+                        f"Rate-limit wall hit on previous batch — "
+                        f"waiting {recovery_sleep:.0f}s before continuing..."
+                    )
+                    recovery_sleep = 0.0
+                await asyncio.sleep(delay)
 
-            translated_batch = await self._translate_batch_safe(
-                batch, target_language, lang_name, source_language, mode
-            )
+            try:
+                translated_batch = await self._translate_batch_safe(
+                    batch, target_language, lang_name, source_language, mode
+                )
+            except _RateLimitExhaustedFallback as exc:
+                # Batch fell back to source text due to exhausted 429 retries.
+                # Schedule a long recovery sleep before the next batch so the
+                # rate-limit window has time to reset.
+                translated_batch = exc.fallback_segments
+                recovery_sleep = _MODE_RATE_LIMIT_RECOVERY[mode]
+
             all_translated.extend(translated_batch)
 
         logger.info(f"Translation complete: {len(all_translated)} segments to {lang_name}")
@@ -151,6 +171,14 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
                 segments[mid:], target_language, lang_name, source_language, mode
             )
             return first + second
+        except _RateLimitExhaustedError as e:
+            # 429 retries exhausted — fall back to source text and re-raise so the
+            # batch loop knows to insert a recovery sleep before the next request
+            logger.warning(
+                f"Translation batch failed ({len(segments)} segments, "
+                f"lang={target_language}): {e} — using source text as fallback"
+            )
+            raise _RateLimitExhaustedFallback(self._fallback_to_source(segments, target_language))
         except RuntimeError as e:
             # Any other translation error — log and fall back to source text
             logger.warning(
@@ -332,7 +360,7 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
                     continue
 
             if response.status_code == 429:
-                raise RuntimeError("API rate limit reached during translation (exhausted retries).")
+                raise _RateLimitExhaustedError("API rate limit reached during translation (exhausted retries).")
             if response.status_code != 200:
                 raise RuntimeError(
                     f"Groq translation API error {response.status_code}: {response.text[:300]}"
@@ -346,3 +374,18 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
 class _TruncatedResponseError(Exception):
     """Internal: raised when the LLM output is truncated by max_tokens."""
     pass
+
+
+class _RateLimitExhaustedError(RuntimeError):
+    """Internal: raised by _request_with_retry when 429 retries are fully exhausted."""
+    pass
+
+
+class _RateLimitExhaustedFallback(Exception):
+    """Internal: carries fallback segments back to translate_segments when 429 is unrecoverable.
+
+    Separates 'rate limit wall hit' from generic errors so the batch loop can
+    insert a long recovery sleep before the next batch instead of continuing immediately.
+    """
+    def __init__(self, fallback_segments: list) -> None:
+        self.fallback_segments = fallback_segments
