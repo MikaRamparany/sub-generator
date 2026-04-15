@@ -20,7 +20,7 @@ LANGUAGE_NAMES = {
     "ar": "Arabic",
 }
 
-BATCH_SIZE = 20
+BATCH_SIZE = 10  # Keep small — LLM output gets truncated with larger batches
 
 
 def _extract_json_from_content(content: str) -> str:
@@ -118,6 +118,8 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
                         {"role": "user", "content": prompt},
                     ],
                     "temperature": 0.3,
+                    # Enough tokens for 10 translated segments (avg ~50 chars each + JSON structure)
+                    "max_tokens": 1024,
                 },
             )
 

@@ -1,20 +1,51 @@
 import { useEffect, useState } from "react";
-import { getDownloadUrl, getJobDownloads } from "../services/api";
+import { getJobDownloads } from "../services/api";
 import type { ExportFile } from "../types";
 
 interface Props {
   jobId: string;
 }
 
+const BACKEND_BASE = "http://127.0.0.1:8000/api";
+
+async function downloadFile(jobId: string, fileName: string): Promise<void> {
+  const url = `${BACKEND_BASE}/jobs/${jobId}/downloads/${encodeURIComponent(fileName)}`;
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Download failed: ${response.status}`);
+  }
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(objectUrl);
+}
+
 export function DownloadsPanel({ jobId }: Props) {
   const [files, setFiles] = useState<ExportFile[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState<string | null>(null);
 
   useEffect(() => {
     getJobDownloads(jobId)
       .then((res) => setFiles(res.files))
       .catch((e) => setError(e.message));
   }, [jobId]);
+
+  const handleDownload = async (file: ExportFile) => {
+    setDownloading(file.file_name);
+    try {
+      await downloadFile(jobId, file.file_name);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Download failed");
+    } finally {
+      setDownloading(null);
+    }
+  };
 
   if (error) return <p className="error-message">{error}</p>;
   if (files.length === 0) return <p className="hint">No exports available yet</p>;
@@ -24,15 +55,17 @@ export function DownloadsPanel({ jobId }: Props) {
       <h3>Downloads</h3>
       <div className="downloads-list">
         {files.map((file) => (
-          <a
+          <button
             key={file.file_name}
             className="download-item"
-            href={getDownloadUrl(jobId, file.file_name)}
-            download={file.file_name}
+            onClick={() => handleDownload(file)}
+            disabled={downloading === file.file_name}
           >
             <span className="file-name">{file.file_name}</span>
-            <span className="file-badge">{file.format.toUpperCase()}</span>
-          </a>
+            <span className="file-badge">
+              {downloading === file.file_name ? "..." : file.format.toUpperCase()}
+            </span>
+          </button>
         ))}
       </div>
     </div>
