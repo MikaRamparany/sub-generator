@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getJobDownloads } from "../services/api";
+import { isTauri } from "../lib/tauri";
 import type { ExportFile } from "../types";
 
 interface Props {
@@ -8,6 +9,29 @@ interface Props {
 
 const BACKEND_BASE = "http://127.0.0.1:8000/api";
 
+async function saveBlob(blob: Blob, defaultName: string): Promise<void> {
+  if (isTauri()) {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const { writeFile } = await import("@tauri-apps/plugin-fs");
+
+    const path = await save({ defaultPath: defaultName });
+    if (!path) return; // user cancelled
+
+    const buffer = new Uint8Array(await blob.arrayBuffer());
+    await writeFile(path, buffer);
+  } else {
+    // Browser fallback
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = defaultName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+}
+
 async function downloadFile(jobId: string, fileName: string): Promise<void> {
   const url = `${BACKEND_BASE}/jobs/${jobId}/downloads/${encodeURIComponent(fileName)}`;
   const response = await fetch(url);
@@ -15,14 +39,7 @@ async function downloadFile(jobId: string, fileName: string): Promise<void> {
     throw new Error(`Download failed: ${response.status}`);
   }
   const blob = await response.blob();
-  const objectUrl = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = objectUrl;
-  a.download = fileName;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(objectUrl);
+  await saveBlob(blob, fileName);
 }
 
 async function downloadZip(jobId: string): Promise<void> {
@@ -32,16 +49,10 @@ async function downloadZip(jobId: string): Promise<void> {
     throw new Error(`Download failed: ${response.status}`);
   }
   const blob = await response.blob();
-  const objectUrl = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = objectUrl;
   const disposition = response.headers.get("Content-Disposition") ?? "";
   const match = disposition.match(/filename="([^"]+)"/);
-  a.download = match ? match[1] : "subtitles.zip";
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(objectUrl);
+  const fileName = match ? match[1] : "subtitles.zip";
+  await saveBlob(blob, fileName);
 }
 
 export function DownloadsPanel({ jobId }: Props) {
