@@ -145,10 +145,16 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
             source_hint = f" The source language is {src_name}."
 
         prompt = (
-            f"Translate the following subtitle segments to {lang_name}.{source_hint}\n"
+            f"Translate the following movie/series subtitle segments to {lang_name}.{source_hint}\n"
             f"Return ONLY a JSON array of objects with 'id' (integer) and 'text' (string) fields.\n"
-            f"Preserve proper nouns. Keep translations concise for subtitle readability.\n"
-            f"Do not add any explanation, just the JSON array.\n\n"
+            f"Do not add any explanation, markdown, or wrapper — just the raw JSON array.\n\n"
+            f"Translation rules:\n"
+            f"- Natural and idiomatic — write as a native {lang_name} speaker would say it\n"
+            f"- Never translate word-for-word; adapt idioms and expressions culturally\n"
+            f"- Keep it concise: subtitles must be readable in the time available\n"
+            f"- Preserve character names, place names, and proper nouns unchanged\n"
+            f"- Match the emotional tone and register (casual, formal, urgent, etc.)\n"
+            f"- For exclamations and interjections, use natural {lang_name} equivalents\n\n"
             f"Segments:\n{json.dumps(segments_data, ensure_ascii=False)}"
         )
 
@@ -158,8 +164,9 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
                 {
                     "role": "system",
                     "content": (
-                        "You are a professional subtitle translator. "
-                        "You output only valid JSON arrays."
+                        "You are a professional subtitle localizer specializing in film and TV series. "
+                        "You produce natural, idiomatic translations — never literal. "
+                        "You output only valid JSON arrays, no markdown."
                     ),
                 },
                 {"role": "user", "content": prompt},

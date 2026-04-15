@@ -59,6 +59,10 @@ class JobStatus(BaseModel):
     error_code: str | None = None
     # Languages that failed translation (for partial success reporting)
     failed_languages: list[str] = Field(default_factory=list)
+    # Segments removed during post-processing (hallucinations, annotations)
+    removed_segment_count: int = 0
+    # Segments where translation fell back to source text (rate limit / batch failure)
+    fallback_segment_count: int = 0
 
 
 # Internal model — file_path is kept server-side only

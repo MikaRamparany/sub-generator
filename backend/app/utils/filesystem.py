@@ -8,9 +8,22 @@ from app.core.config import settings
 from app.core.logging import logger
 
 
+# Suffixes that should be stripped from the stem when they come from a
+# previously exported subtitle file (e.g. AvatarAVTLB.original.srt → AvatarAVTLB)
+_STRIPPABLE_SUFFIXES = {"original", "srt", "vtt", "en", "fr", "de", "es", "pt", "ar"}
+
+
 def get_video_base_name(video_path: str) -> str:
-    """Extract base name without extension from video path."""
-    return Path(video_path).stem
+    """Extract base name without extension from video path.
+
+    Strips trailing language/format tags so that importing
+    AvatarAVTLB.original.srt produces base 'AvatarAVTLB', not 'AvatarAVTLB.original'.
+    """
+    stem = Path(video_path).stem  # removes last extension (.srt, .mp4, ...)
+    parts = stem.rsplit(".", 1)
+    if len(parts) == 2 and parts[1].lower() in _STRIPPABLE_SUFFIXES:
+        return parts[0]
+    return stem
 
 
 def get_export_filename(video_path: str, language: str, fmt: str) -> str:

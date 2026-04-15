@@ -190,6 +190,7 @@ class JobManager:
             # Step 4: Post-process
             job.update("post_processing", 0.65, "Cleaning up segments...")
             job.source_segments = clean_segments(all_segments)
+            job.status.removed_segment_count = len(all_segments) - len(job.source_segments)
 
             # Step 5: Generate source exports
             self._generate_exports(job, job.source_segments, "original")
@@ -231,6 +232,16 @@ class JobManager:
                     source_language=config.source_language if config.source_language != "auto" else None,
                 )
                 job.translations[lang] = translated
+                # Count segments where translation fell back to source text
+                fallbacks = sum(
+                    1 for s in translated if s.translated_text == s.source_text
+                )
+                job.status.fallback_segment_count += fallbacks
+                if fallbacks:
+                    logger.warning(
+                        f"[Job {job.job_id}] {fallbacks} segments used source text as "
+                        f"fallback for lang={lang}"
+                    )
                 translated_as_segments = translated_segments_to_subtitle_segments(translated)
                 self._generate_exports(job, translated_as_segments, lang)
 
@@ -238,15 +249,26 @@ class JobManager:
                 job.record_translation_failure(lang, str(e))
 
     def _finalize(self, job: Job) -> None:
-        """Set final completed state with appropriate message."""
-        failed = job.status.failed_languages
-        if failed:
-            langs_str = ", ".join(failed)
-            job.update(
-                "completed",
-                1.0,
-                f"Done with partial results — translation failed for: {langs_str}.",
+        """Set final completed state with an honest summary message."""
+        warnings: list[str] = []
+
+        if job.status.failed_languages:
+            langs_str = ", ".join(job.status.failed_languages)
+            warnings.append(f"translation failed for: {langs_str}")
+
+        if job.status.fallback_segment_count:
+            warnings.append(
+                f"{job.status.fallback_segment_count} segment(s) kept in source language (rate limit)"
             )
+
+        if job.status.removed_segment_count:
+            warnings.append(
+                f"{job.status.removed_segment_count} segment(s) removed (hallucinations/annotations)"
+            )
+
+        if warnings:
+            msg = "Done with warnings — " + "; ".join(warnings) + "."
+            job.update("completed", 1.0, msg)
         else:
             job.update("completed", 1.0, "All subtitles generated successfully.")
 

@@ -27,6 +27,19 @@ _ANNOTATION_PATTERN = re.compile(
 # Threshold for considering two segments as duplicates (0.0–1.0)
 _DUPLICATE_SIMILARITY = 0.85
 
+# Duration hallucination: more than N seconds per word is implausible speech
+_MAX_SECONDS_PER_WORD = 8.0
+# Minimum duration to even bother checking (short segments are fine)
+_MIN_DURATION_FOR_HALLUCINATION_CHECK = 12.0
+
+# Multi-speaker: segments longer than this word count get a line-break heuristic
+_MULTI_SPEAKER_MIN_WORDS = 16
+# Interjections that often signal a new speaker turn
+_SPEAKER_STARTER = re.compile(
+    r"(?<=[a-z,])\s+(Oh|Well|Hey|Ah|So|Now|But|No|Yes|Look|Wait|Come|Go|Please|Sorry)\s+",
+    re.IGNORECASE,
+)
+
 
 def clean_segments(segments: list[SubtitleSegment]) -> list[SubtitleSegment]:
     """Apply all post-processing rules to subtitle segments."""
@@ -36,12 +49,14 @@ def clean_segments(segments: list[SubtitleSegment]) -> list[SubtitleSegment]:
     result = trim_text(result)
     result = remove_annotations(result)
     result = remove_hallucinations(result)
+    result = remove_duration_hallucinations(result)
     result = fix_negative_timecodes(result)
     result = fix_invalid_durations(result)
     result = sort_chronologically(result)
     result = fix_overlaps(result)
     result = deduplicate_boundary_segments(result)
     result = merge_short_segments(result)
+    result = split_multi_speaker(result)
     result = clean_punctuation(result)
     result = capitalize_sentences(result)
     result = reindex(result)
@@ -87,6 +102,84 @@ def remove_hallucinations(segments: list[SubtitleSegment]) -> list[SubtitleSegme
     if removed:
         logger.info(f"Removed {removed} likely hallucinated segments")
     return kept
+
+
+def remove_duration_hallucinations(segments: list[SubtitleSegment]) -> list[SubtitleSegment]:
+    """Remove segments where duration is implausibly long relative to text length.
+
+    Whisper fills silence with short hallucinated phrases that last many seconds
+    (e.g. 'I love you.' over 30 seconds). A real speaker averages ~2 words/second,
+    so more than 8 seconds per word is a strong hallucination signal.
+    """
+    kept = []
+    removed = 0
+    for s in segments:
+        duration = s.end - s.start
+        if duration < _MIN_DURATION_FOR_HALLUCINATION_CHECK:
+            kept.append(s)
+            continue
+        word_count = len(s.text.split())
+        if word_count == 0:
+            removed += 1
+            continue
+        if duration / word_count > _MAX_SECONDS_PER_WORD:
+            removed += 1
+            logger.debug(
+                f"Removing duration hallucination: '{s.text}' "
+                f"({duration:.1f}s / {word_count} words = "
+                f"{duration / word_count:.1f}s/word)"
+            )
+        else:
+            kept.append(s)
+    if removed:
+        logger.info(f"Removed {removed} duration-hallucinated segments")
+    return kept
+
+
+def split_multi_speaker(segments: list[SubtitleSegment]) -> list[SubtitleSegment]:
+    """Add a line break in long segments that appear to contain multiple speakers.
+
+    Looks for interjection words that typically start a new speaker turn
+    (Oh, Well, Hey, etc.) after the first quarter of the text. Falls back to
+    a midpoint split for very long segments with no such marker.
+    """
+    result = []
+    split_count = 0
+    for s in segments:
+        words = s.text.split()
+        # Only process long segments with no existing line break
+        if len(words) < _MULTI_SPEAKER_MIN_WORDS or "\n" in s.text:
+            result.append(s)
+            continue
+
+        # Skip if the segment already has natural sentence boundaries
+        if re.search(r"[.!?]\s+[A-Z]", s.text):
+            result.append(s)
+            continue
+
+        new_text: str | None = None
+
+        # Look for a speaker-starter interjection after the first quarter
+        quarter = len(" ".join(words[: len(words) // 4]))
+        tail = s.text[quarter:]
+        match = _SPEAKER_STARTER.search(tail)
+        if match:
+            split_at = quarter + match.start() + 1  # +1 to skip the space before
+            new_text = s.text[:split_at].rstrip() + "\n- " + s.text[split_at:].lstrip()
+        elif len(words) > 22:
+            # Midpoint split for very long segments with no marker
+            mid = len(words) // 2
+            new_text = " ".join(words[:mid]) + "\n" + " ".join(words[mid:])
+
+        if new_text:
+            result.append(SubtitleSegment(id=s.id, start=s.start, end=s.end, text=new_text))
+            split_count += 1
+        else:
+            result.append(s)
+
+    if split_count:
+        logger.info(f"Added line breaks to {split_count} multi-speaker segment(s)")
+    return result
 
 
 def deduplicate_boundary_segments(segments: list[SubtitleSegment]) -> list[SubtitleSegment]:
