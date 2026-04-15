@@ -43,6 +43,17 @@ _MODE_RETRY_BACKOFF = {
 _MODE_RATE_LIMIT_RECOVERY = {"fast": 45, "balanced": 75, "safe": 120}  # seconds
 
 
+def _parse_retry_after(response: httpx.Response) -> float | None:
+    """Read Groq's retry-after header and return seconds to wait, or None."""
+    value = response.headers.get("retry-after")
+    if value is None:
+        return None
+    try:
+        return max(1.0, float(value))
+    except (ValueError, TypeError):
+        return None
+
+
 def _extract_json_from_content(content: str) -> str:
     """Strip markdown code fences if present and return raw JSON string."""
     content = content.strip()
@@ -124,10 +135,9 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
                 )
             except _RateLimitExhaustedFallback as exc:
                 # Batch fell back to source text due to exhausted 429 retries.
-                # Schedule a long recovery sleep before the next batch so the
-                # rate-limit window has time to reset.
+                # Use server's retry-after if available; otherwise use our mode default.
                 translated_batch = exc.fallback_segments
-                recovery_sleep = _MODE_RATE_LIMIT_RECOVERY[mode]
+                recovery_sleep = exc.retry_after or _MODE_RATE_LIMIT_RECOVERY[mode]
 
             all_translated.extend(translated_batch)
 
@@ -178,7 +188,10 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
                 f"Translation batch failed ({len(segments)} segments, "
                 f"lang={target_language}): {e} — using source text as fallback"
             )
-            raise _RateLimitExhaustedFallback(self._fallback_to_source(segments, target_language))
+            raise _RateLimitExhaustedFallback(
+                self._fallback_to_source(segments, target_language),
+                retry_after=e.retry_after,
+            )
         except RuntimeError as e:
             # Any other translation error — log and fall back to source text
             logger.warning(
@@ -351,16 +364,28 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
             # Retryable HTTP status codes (server errors + rate limit)
             if response.status_code in _RETRYABLE_STATUS or response.status_code == 429:
                 if attempt < max_retries:
-                    wait = backoff[attempt]
+                    if response.status_code == 429:
+                        # Use server-directed retry-after when available — it knows
+                        # exactly when the rate-limit window resets. Fall back to
+                        # our fixed backoff only if the header is absent/unparseable.
+                        wait = _parse_retry_after(response) or backoff[attempt]
+                    else:
+                        wait = backoff[attempt]
                     logger.warning(
                         f"Translation API returned {response.status_code} "
-                        f"(attempt {attempt + 1}/{max_retries + 1}) — retrying in {wait}s"
+                        f"(attempt {attempt + 1}/{max_retries + 1}) — retrying in {wait:.0f}s"
                     )
                     await asyncio.sleep(wait)
                     continue
 
             if response.status_code == 429:
-                raise _RateLimitExhaustedError("API rate limit reached during translation (exhausted retries).")
+                # Retries exhausted — carry the last retry-after so the caller can
+                # schedule a proper recovery sleep before the next batch.
+                retry_after = _parse_retry_after(response)
+                raise _RateLimitExhaustedError(
+                    "API rate limit reached during translation (exhausted retries).",
+                    retry_after,
+                )
             if response.status_code != 200:
                 raise RuntimeError(
                     f"Groq translation API error {response.status_code}: {response.text[:300]}"
@@ -377,15 +402,22 @@ class _TruncatedResponseError(Exception):
 
 
 class _RateLimitExhaustedError(RuntimeError):
-    """Internal: raised by _request_with_retry when 429 retries are fully exhausted."""
-    pass
+    """Internal: raised by _request_with_retry when 429 retries are fully exhausted.
+
+    Carries the server's retry-after value (if present) so callers can sleep
+    exactly as long as the API requires instead of guessing.
+    """
+    def __init__(self, message: str, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 class _RateLimitExhaustedFallback(Exception):
     """Internal: carries fallback segments back to translate_segments when 429 is unrecoverable.
 
     Separates 'rate limit wall hit' from generic errors so the batch loop can
-    insert a long recovery sleep before the next batch instead of continuing immediately.
+    insert a server-directed (or mode-default) recovery sleep before the next batch.
     """
-    def __init__(self, fallback_segments: list) -> None:
+    def __init__(self, fallback_segments: list, retry_after: float | None = None) -> None:
         self.fallback_segments = fallback_segments
+        self.retry_after = retry_after  # from Groq's retry-after header, if present
