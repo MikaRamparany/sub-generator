@@ -2,7 +2,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router, set_job_manager
+from app.core.config import settings
 from app.core.logging import logger
+from app.providers.deepl_translation import DeepLTranslationProvider
 from app.providers.groq_stt import GroqSTTProvider
 from app.providers.groq_translation import GroqTranslationProvider
 from app.services.jobs.job_manager import JobManager
@@ -19,9 +21,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize providers and job manager
+# Translation: prefer DeepL if configured (no TPM issues), fall back to Groq LLM
 stt_provider = GroqSTTProvider()
-translation_provider = GroqTranslationProvider()
+if settings.deepl_api_key:
+    translation_provider = DeepLTranslationProvider()
+    logger.info("Translation provider: DeepL")
+else:
+    translation_provider = GroqTranslationProvider()
+    logger.info("Translation provider: Groq LLM (set DEEPL_API_KEY to use DeepL)")
+
 job_manager = JobManager(stt_provider, translation_provider)
 set_job_manager(job_manager)
 

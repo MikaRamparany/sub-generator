@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     groq_api_key: str = ""
+    deepl_api_key: str = ""  # if set, DeepL is used for translation instead of Groq LLM
 
     # Two explicit STT models — fast uses a lighter/faster Whisper variant,
     # high_quality uses the large model with deterministic decoding (temperature=0).
