@@ -18,6 +18,7 @@ export function JobConfigPanel({ probe, videoPath, subtitlePath, onStart, disabl
   const [outputFormats, setOutputFormats] = useState<string[]>(["srt", "vtt"]);
   const [qualityMode, setQualityMode] = useState<"fast" | "high_quality">("fast");
   const [translationMode, setTranslationMode] = useState<"fast" | "balanced" | "safe">("fast");
+  const [pipelineMode, setPipelineMode] = useState<"standard" | "premium">("standard");
 
   const toggleLang = (code: string) => {
     setTargetLanguages((prev) =>
@@ -44,6 +45,7 @@ export function JobConfigPanel({ probe, videoPath, subtitlePath, onStart, disabl
       output_formats: outputFormats,
       quality_mode: qualityMode,
       translation_mode: translationMode,
+      pipeline_mode: pipelineMode,
     });
   };
 
@@ -183,6 +185,32 @@ export function JobConfigPanel({ probe, videoPath, subtitlePath, onStart, disabl
           </div>
         </div>
       )}
+
+      <div className="config-section">
+        <label>Pipeline</label>
+        <div className="radio-group">
+          <label className="radio-label">
+            <input
+              type="radio"
+              name="pipeline_mode"
+              checked={pipelineMode === "standard"}
+              onChange={() => setPipelineMode("standard")}
+              disabled={disabled}
+            />
+            Standard <span className="hint">(rapide, coût maîtrisé)</span>
+          </label>
+          <label className="radio-label">
+            <input
+              type="radio"
+              name="pipeline_mode"
+              checked={pipelineMode === "premium"}
+              onChange={() => setPipelineMode("premium")}
+              disabled={disabled}
+            />
+            Premium <span className="hint">(analyse contexte + QA renforcée)</span>
+          </label>
+        </div>
+      </div>
 
       <button
         className="btn-primary"

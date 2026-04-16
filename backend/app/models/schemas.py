@@ -50,6 +50,11 @@ class JobConfig(BaseModel):
     output_formats: list[str] = Field(default_factory=lambda: ["srt", "vtt"])
     quality_mode: str = "fast"
     translation_mode: str = "fast"  # "fast" | "safe" — controls batch size and retry patience
+    # Pipeline level:
+    #   standard  — fast, cost-controlled (no transcript analysis, basic QA)
+    #   premium   — high-quality STT, transcript analysis, context-injected translation,
+    #               prioritised QA, terminology consistency pass
+    pipeline_mode: str = "standard"
 
 
 class JobStatus(BaseModel):
@@ -62,7 +67,11 @@ class JobStatus(BaseModel):
     failed_languages: list[str] = Field(default_factory=list)
     # Segments removed during post-processing (hallucinations, annotations)
     removed_segment_count: int = 0
-    # Segments where translation fell back to source text (rate limit / batch failure)
+    # True fallbacks: segments where translation failed and source text was kept
+    fallback_problematic_count: int = 0
+    # Legitimate identicals: proper nouns / interjections that are correctly unchanged
+    fallback_legit_count: int = 0
+    # Kept for backward compatibility (sum of both)
     fallback_segment_count: int = 0
 
 

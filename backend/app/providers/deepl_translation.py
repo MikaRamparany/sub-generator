@@ -6,6 +6,7 @@ import httpx
 
 from app.core.config import settings
 from app.core.logging import logger
+from app.models.context import TranscriptContext
 from app.models.schemas import SubtitleSegment, TranslatedSubtitleSegment
 from app.providers.base import SubtitleTranslationProvider
 
@@ -49,6 +50,7 @@ class DeepLTranslationProvider(SubtitleTranslationProvider):
         target_language: str,
         source_language: str | None = None,
         translation_mode: str = "fast",  # ignored — DeepL has no meaningful modes
+        transcript_context: TranscriptContext | None = None,
     ) -> list[TranslatedSubtitleSegment]:
         if not settings.deepl_api_key:
             raise RuntimeError("DEEPL_API_KEY is not configured")
@@ -59,6 +61,16 @@ class DeepLTranslationProvider(SubtitleTranslationProvider):
             if source_language and source_language != "auto"
             else None
         )
+
+        # Build a global context preamble from the transcript analysis.
+        # DeepL's `context` param improves disambiguation of short / ambiguous words.
+        global_context_prefix = ""
+        if transcript_context and transcript_context.is_useful():
+            global_context_prefix = transcript_context.to_glossary_hint(target_language)
+            logger.debug(
+                f"DeepL: injecting transcript context "
+                f"({len(transcript_context.glossary)} glossary entries)"
+            )
 
         logger.info(
             f"Translating {len(segments)} segments to {target_lang} via DeepL "
@@ -74,9 +86,19 @@ class DeepLTranslationProvider(SubtitleTranslationProvider):
             if batch_idx > 0:
                 await asyncio.sleep(_INTER_BATCH_DELAY)
 
+            # Combine global context hint + local rolling context
+            combined_context: str | None = None
+            if global_context_prefix or prev_context:
+                parts = []
+                if global_context_prefix:
+                    parts.append(global_context_prefix)
+                if prev_context:
+                    parts.append(prev_context)
+                combined_context = "\n".join(parts)
+
             texts = await self._translate_texts(
                 [s.text for s in batch], target_lang, source_lang,
-                context=prev_context,
+                context=combined_context,
             )
             # Contexte pour le prochain batch = texte source des N derniers segs de ce batch
             prev_context = "\n".join(s.text for s in batch[-_CONTEXT_SEGMENTS:])

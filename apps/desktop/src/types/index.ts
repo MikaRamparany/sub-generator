@@ -45,6 +45,9 @@ export interface JobConfig {
   output_formats: string[];
   quality_mode: "fast" | "high_quality";
   translation_mode: "fast" | "balanced" | "safe";
+  // "standard": fast pipeline, cost-controlled
+  // "premium": transcript analysis + context injection + prioritised QA
+  pipeline_mode: "standard" | "premium";
 }
 
 export interface JobStatus {
@@ -90,6 +93,7 @@ export const JOB_STATE_LABELS: Record<string, string> = {
   transcribing: "Transcribing...",
   parsing_subtitles: "Parsing subtitles...",
   post_processing: "Cleaning up...",
+  analysing_transcript: "Analysing transcript...",
   translating: "Translating...",
   completed: "Complete!",
   failed: "Failed",

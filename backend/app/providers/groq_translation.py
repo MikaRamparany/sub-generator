@@ -7,6 +7,7 @@ import httpx
 
 from app.core.config import settings
 from app.core.logging import logger
+from app.models.context import TranscriptContext
 from app.models.schemas import SubtitleSegment, TranslatedSubtitleSegment
 from app.providers.base import SubtitleTranslationProvider
 
@@ -95,6 +96,7 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
         target_language: str,
         source_language: str | None = None,
         translation_mode: str = "fast",
+        transcript_context: TranscriptContext | None = None,
     ) -> list[TranslatedSubtitleSegment]:
         """Translate segments using Groq LLM API, batch by batch.
 
@@ -140,7 +142,8 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
 
             try:
                 translated_batch = await self._translate_batch_safe(
-                    batch, target_language, lang_name, source_language, mode
+                    batch, target_language, lang_name, source_language, mode,
+                    transcript_context=transcript_context,
                 )
             except _RateLimitExhaustedFallback as exc:
                 # Batch fell back to source text due to exhausted 429 retries.
@@ -160,12 +163,14 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
         lang_name: str,
         source_language: str | None,
         mode: str = "fast",
+        transcript_context: TranscriptContext | None = None,
     ) -> list[TranslatedSubtitleSegment]:
         """Translate a batch, splitting in half on truncation, falling back to source on error."""
         inter_batch_delay = _MODE_INTER_BATCH_DELAY[mode]
         try:
             return await self._translate_batch(
-                segments, target_language, lang_name, source_language, mode
+                segments, target_language, lang_name, source_language, mode,
+                transcript_context=transcript_context,
             )
         except _TruncatedResponseError:
             # Output was truncated — split batch in half and retry each part
@@ -183,11 +188,13 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
             )
             await asyncio.sleep(inter_batch_delay)
             first = await self._translate_batch_safe(
-                segments[:mid], target_language, lang_name, source_language, mode
+                segments[:mid], target_language, lang_name, source_language, mode,
+                transcript_context=transcript_context,
             )
             await asyncio.sleep(inter_batch_delay)
             second = await self._translate_batch_safe(
-                segments[mid:], target_language, lang_name, source_language, mode
+                segments[mid:], target_language, lang_name, source_language, mode,
+                transcript_context=transcript_context,
             )
             return first + second
         except _RateLimitExhaustedError as e:
@@ -216,6 +223,7 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
         lang_name: str,
         source_language: str | None,
         mode: str = "fast",
+        transcript_context: TranscriptContext | None = None,
     ) -> list[TranslatedSubtitleSegment]:
         model = settings.groq_translation_model
         segments_data = [{"id": s.id, "text": s.text} for s in segments]
@@ -224,6 +232,11 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
         if source_language and source_language != "auto":
             src_name = LANGUAGE_NAMES.get(source_language, source_language)
             source_hint = f" The source language is {src_name}."
+
+        context_block = ""
+        if transcript_context and transcript_context.is_useful():
+            hint = transcript_context.to_glossary_hint(target_language)
+            context_block = f"\n\nTranscript context (inferred — use to improve consistency):\n{hint}\n"
 
         prompt = (
             f"Translate the following movie/series subtitle segments to {lang_name}.{source_hint}\n"
@@ -235,7 +248,8 @@ class GroqTranslationProvider(SubtitleTranslationProvider):
             f"- Keep it concise: subtitles must be readable in the time available\n"
             f"- Preserve character names, place names, and proper nouns unchanged\n"
             f"- Match the emotional tone and register (casual, formal, urgent, etc.)\n"
-            f"- For exclamations and interjections, use natural {lang_name} equivalents\n\n"
+            f"- For exclamations and interjections, use natural {lang_name} equivalents\n"
+            f"{context_block}\n"
             f"Segments:\n{json.dumps(segments_data, ensure_ascii=False)}"
         )
 

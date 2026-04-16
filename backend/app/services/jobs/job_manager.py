@@ -25,7 +25,8 @@ from app.services.subtitles.export_service import (
 )
 from app.services.subtitles.parse_service import parse_subtitle_file
 from app.services.subtitles.postprocess_service import clean_segments, clean_imported_segments
-from app.services.subtitles.translation_qa_service import qa_retranslate
+from app.services.subtitles.transcript_context_service import analyze_transcript
+from app.services.subtitles.translation_qa_service import is_legitimate_identical, qa_retranslate
 from app.utils.filesystem import (
     cleanup_directory,
     ensure_dir,
@@ -212,14 +213,41 @@ class JobManager:
             job.fail(msg, "pipeline_error")
 
     async def _translate_phase(self, job: Job, start_progress: float) -> None:
-        """Run translation for all target languages."""
+        """Run translation for all target languages.
+
+        Standard mode: translate → basic QA (top-60 suspects)
+        Premium mode:  transcript analysis → translate with context → prioritised QA
+                       → terminology consistency pass
+        """
         config = job.config
         if not config.target_languages:
             return
 
+        is_premium = config.pipeline_mode == "premium"
+        source_lang = config.source_language if config.source_language != "auto" else None
+
         # Cooldown to let Groq rate limits reset after STT
         job.update("translating", start_progress, "Waiting before translation (rate limit cooldown)...")
         await asyncio.sleep(5)
+
+        # Premium: one global transcript analysis before translating any language
+        transcript_context = None
+        if is_premium and job.source_segments:
+            job.update(
+                "translating", start_progress + 0.02,
+                "Analysing transcript for context..."
+            )
+            for lang in config.target_languages[:1]:  # analyse for first target lang
+                transcript_context = await analyze_transcript(
+                    job.source_segments,
+                    source_language=source_lang,
+                    target_language=lang,
+                )
+            if transcript_context:
+                logger.info(
+                    f"[Job {job.job_id}] Premium: transcript context ready "
+                    f"(confidence={transcript_context.confidence:.2f})"
+                )
 
         total_langs = len(config.target_languages)
         for i, lang in enumerate(config.target_languages):
@@ -227,32 +255,46 @@ class JobManager:
             job.update("translating", progress, f"Translating to {lang}...")
 
             try:
-                source_lang = config.source_language if config.source_language != "auto" else None
                 translated = await self.translation_provider.translate_segments(
                     job.source_segments,
                     target_language=lang,
                     source_language=source_lang,
                     translation_mode=config.translation_mode,
+                    transcript_context=transcript_context,
                 )
 
-                # QA pass: detect and retranslate suspect segments via Groq
+                # QA pass: score + prioritise suspects, retranslate worst N
                 translated = await qa_retranslate(
                     translated,
                     target_language=lang,
                     source_language=source_lang,
+                    transcript_context=transcript_context,
+                    # Premium gets a larger QA budget
+                    max_retranslate=80 if is_premium else 60,
                 )
 
                 job.translations[lang] = translated
-                # Count segments where translation fell back to source text
-                fallbacks = sum(
-                    1 for s in translated if s.translated_text == s.source_text
-                )
-                job.status.fallback_segment_count += fallbacks
-                if fallbacks:
+
+                # Split fallback counter: problematic vs legitimate identical
+                for s in translated:
+                    if s.translated_text == s.source_text:
+                        if is_legitimate_identical(s.source_text, s.translated_text):
+                            job.status.fallback_legit_count += 1
+                        else:
+                            job.status.fallback_problematic_count += 1
+                            job.status.fallback_segment_count += 1
+
+                if job.status.fallback_problematic_count:
                     logger.warning(
-                        f"[Job {job.job_id}] {fallbacks} segments used source text as "
-                        f"fallback for lang={lang}"
+                        f"[Job {job.job_id}] {job.status.fallback_problematic_count} segment(s) "
+                        f"not translated (kept source) for lang={lang}"
                     )
+                if job.status.fallback_legit_count:
+                    logger.info(
+                        f"[Job {job.job_id}] {job.status.fallback_legit_count} segment(s) "
+                        f"legitimately identical (proper nouns / interjections) for lang={lang}"
+                    )
+
                 translated_as_segments = translated_segments_to_subtitle_segments(translated)
                 self._generate_exports(job, translated_as_segments, lang)
 
@@ -267,9 +309,9 @@ class JobManager:
             langs_str = ", ".join(job.status.failed_languages)
             warnings.append(f"translation failed for: {langs_str}")
 
-        if job.status.fallback_segment_count:
+        if job.status.fallback_problematic_count:
             warnings.append(
-                f"{job.status.fallback_segment_count} segment(s) kept in source language (rate limit)"
+                f"{job.status.fallback_problematic_count} segment(s) not translated (kept source)"
             )
 
         if job.status.removed_segment_count:

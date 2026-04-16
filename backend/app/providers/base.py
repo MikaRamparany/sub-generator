@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
 from app.models.schemas import SubtitleSegment, TranslatedSubtitleSegment
+
+if TYPE_CHECKING:
+    from app.models.context import TranscriptContext
 
 
 class SpeechToTextProvider(ABC):
@@ -25,6 +29,7 @@ class SubtitleTranslationProvider(ABC):
         target_language: str,
         source_language: str | None = None,
         translation_mode: str = "fast",
+        transcript_context: "TranscriptContext | None" = None,
     ) -> list[TranslatedSubtitleSegment]:
         """Translate subtitle segments to target language, preserving timecodes."""
         ...
