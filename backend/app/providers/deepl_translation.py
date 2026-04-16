@@ -31,8 +31,9 @@ _SOURCE_LANG = {
     "pt": "PT",
 }
 
-# DeepL accepts up to 50 texts per request
-_BATCH_SIZE = 50
+# DeepL accepts up to 50 texts per request; smaller batches give better context
+_BATCH_SIZE = 20
+_CONTEXT_SEGMENTS = 5  # segments précédents passés en contexte
 # Small courtesy delay between batches (DeepL rate limits are very generous,
 # but avoid hammering in a tight loop)
 _INTER_BATCH_DELAY = 0.3  # seconds
@@ -65,6 +66,7 @@ class DeepLTranslationProvider(SubtitleTranslationProvider):
         )
 
         all_translated: list[TranslatedSubtitleSegment] = []
+        prev_context: str | None = None
 
         for batch_idx, batch_start in enumerate(range(0, len(segments), _BATCH_SIZE)):
             batch = segments[batch_start : batch_start + _BATCH_SIZE]
@@ -73,8 +75,11 @@ class DeepLTranslationProvider(SubtitleTranslationProvider):
                 await asyncio.sleep(_INTER_BATCH_DELAY)
 
             texts = await self._translate_texts(
-                [s.text for s in batch], target_lang, source_lang
+                [s.text for s in batch], target_lang, source_lang,
+                context=prev_context,
             )
+            # Contexte pour le prochain batch = texte source des N derniers segs de ce batch
+            prev_context = "\n".join(s.text for s in batch[-_CONTEXT_SEGMENTS:])
 
             for seg, translated_text in zip(batch, texts):
                 all_translated.append(
@@ -96,6 +101,7 @@ class DeepLTranslationProvider(SubtitleTranslationProvider):
         texts: list[str],
         target_lang: str,
         source_lang: str | None,
+        context: str | None = None,
     ) -> list[str]:
         """Send a batch of texts to DeepL and return translated strings."""
         api_key = settings.deepl_api_key
@@ -108,6 +114,8 @@ class DeepLTranslationProvider(SubtitleTranslationProvider):
         }
         if source_lang:
             payload["source_lang"] = source_lang
+        if context:
+            payload["context"] = context
 
         for attempt in range(_MAX_RETRIES + 1):
             try:

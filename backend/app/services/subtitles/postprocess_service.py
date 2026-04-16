@@ -9,6 +9,8 @@ from app.models.schemas import SubtitleSegment
 MIN_SEGMENT_DURATION = 0.3  # seconds
 MAX_GAP_FOR_MERGE = 0.15  # seconds
 
+_MAX_LINE_CHARS = 42   # standard Netflix/broadcast
+
 # Hard cap on display duration (Netflix standard: 7s max per card)
 _MAX_DISPLAY_DURATION = 7.0
 # Reading speed for natural duration estimation
@@ -73,6 +75,81 @@ _SPEAKER_STARTER = re.compile(
 )
 
 
+def _find_split(text: str) -> int | None:
+    """Find best char index to split a long line near its middle."""
+    mid = len(text) // 2
+    candidates: list[int] = []
+
+    # Prefer break after sentence-end punctuation
+    for m in re.finditer(r'(?<=[.!?])\s+', text):
+        candidates.append(m.start())
+    # Prefer break before conjunction
+    for m in re.finditer(
+        r'\s+(?=(?:and|but|or|so|yet|because|when|while|if|that|which|who)\b)',
+        text, re.IGNORECASE
+    ):
+        candidates.append(m.start())
+    # After comma
+    for m in re.finditer(r'(?<=,)\s+', text):
+        candidates.append(m.start())
+    # Any space
+    for m in re.finditer(r'\s+', text):
+        candidates.append(m.start())
+
+    if not candidates:
+        return None
+
+    # Closest to midpoint, slightly biased toward first half
+    best = min(candidates, key=lambda p: abs(p - mid) + (0.1 if p > mid else 0))
+    return best if 0 < best < len(text) else None
+
+
+def _reflow_text(text: str) -> str:
+    """Enforce max 2 lines of _MAX_LINE_CHARS each."""
+    raw_lines = [l.strip() for l in text.split('\n') if l.strip()]
+    out: list[str] = []
+
+    for line in raw_lines:
+        if len(out) >= 2:
+            break  # already 2 lines, discard overflow
+        if len(line) <= _MAX_LINE_CHARS:
+            out.append(line)
+        else:
+            sp = _find_split(line)
+            if sp:
+                out.append(line[:sp].rstrip())
+                if len(out) < 2:
+                    out.append(line[sp:].lstrip())
+            else:
+                out.append(line)  # can't split cleanly, keep as-is
+
+    return '\n'.join(out) if out else text
+
+
+def reflow_segments(segments: list[SubtitleSegment]) -> list[SubtitleSegment]:
+    """Enforce max 2 lines × 42 chars per subtitle card."""
+    result = [
+        SubtitleSegment(id=s.id, start=s.start, end=s.end, text=_reflow_text(s.text))
+        for s in segments
+    ]
+    return result
+
+
+def clean_imported_segments(segments: list[SubtitleSegment]) -> list[SubtitleSegment]:
+    """Light cleanup for user-provided subtitle files (no hallucination filters)."""
+    result = segments
+    result = remove_empty_segments(result)
+    result = trim_text(result)
+    result = fix_negative_timecodes(result)
+    result = fix_invalid_durations(result)
+    result = sort_chronologically(result)
+    result = fix_overlaps(result)
+    result = reflow_segments(result)
+    result = clean_punctuation(result)
+    result = reindex(result)
+    return result
+
+
 def clean_segments(segments: list[SubtitleSegment]) -> list[SubtitleSegment]:
     """Apply all post-processing rules to subtitle segments."""
     original_count = len(segments)
@@ -91,6 +168,7 @@ def clean_segments(segments: list[SubtitleSegment]) -> list[SubtitleSegment]:
     result = deduplicate_boundary_segments(result)
     result = merge_short_segments(result)
     result = split_multi_speaker(result)
+    result = reflow_segments(result)
     result = clean_punctuation(result)
     result = capitalize_sentences(result)
     result = reindex(result)

@@ -24,7 +24,7 @@ from app.services.subtitles.export_service import (
     write_subtitle_file,
 )
 from app.services.subtitles.parse_service import parse_subtitle_file
-from app.services.subtitles.postprocess_service import clean_segments
+from app.services.subtitles.postprocess_service import clean_segments, clean_imported_segments
 from app.utils.filesystem import (
     cleanup_directory,
     ensure_dir,
@@ -116,9 +116,9 @@ class JobManager:
                 job.fail("Subtitle file contains no segments", "empty_subtitles")
                 return
 
-            # Step 2: Light cleanup (no hallucination/dedup since it's user-provided)
+            # Step 2: Light cleanup (reflow + timecode fixes, no hallucination filter)
             job.update("post_processing", 0.4, "Processing segments...")
-            job.source_segments = raw_segments
+            job.source_segments = clean_imported_segments(raw_segments)
 
             # Step 3: Generate source exports
             self._generate_exports(job, job.source_segments, "original")
