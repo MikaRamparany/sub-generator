@@ -27,6 +27,16 @@ _HALLUCINATION_PATTERNS = [
     re.compile(r"^(subtitles?|captions?|translation|transcript)\s*(by|:|from|made)", re.IGNORECASE),  # credit lines
     re.compile(r"^(downloaded|synced?|corrected?|encoded?)\s+(by|from|at|with)\s+", re.IGNORECASE),  # rip tags
     re.compile(r"^[\s♪\-_=*#.]{1,4}$"),  # only decorative chars (1–4)
+    # Watermarks: ALL-CAPS words + 4-digit year (e.g. "BF WATCH TV 2021", "HDTV 2023")
+    re.compile(r"^[A-Z0-9][A-Z0-9\s.\-]{2,50}\b(19|20)\d{2}\b\s*$"),
+    # Release/fansub group tags: [FGT], (YIFY), [BluRay.x265], etc.
+    re.compile(r"^[\[\(][^\]\)\n]{1,40}[\]\)]\s*$"),
+    # Repeated phrase: "I love you I love you" or "Hmm hmm hmm"
+    re.compile(r"^(.{4,30})\s+\1\s*$"),
+    # Decorative separator lines: ===title===, ---EOF---, *** end ***
+    re.compile(r"^[-=*_~<>]{2,}\s*\S.*\S\s*[-=*_~<>]{2,}$"),
+    # Amara / community caption credit sites
+    re.compile(r"amara\.org|opensubtitles|subscene|yifysubtitles", re.IGNORECASE),
 ]
 
 # Annotations Whisper sometimes inserts — not actual speech
@@ -41,6 +51,18 @@ _DUPLICATE_SIMILARITY = 0.85
 _MAX_SECONDS_PER_WORD = 8.0
 # Minimum duration to even bother checking (short segments are fine)
 _MIN_DURATION_FOR_HALLUCINATION_CHECK = 12.0
+
+# Short-text duration check: catches "I love you." on 15s of silence
+# (too few words for the standard 8s/word rule to trigger)
+_SHORT_TEXT_MAX_WORDS = 5       # only applies to segments with ≤ 5 words
+_SHORT_TEXT_MIN_DURATION = 10.0  # don't flag if under 10s (legitimate pause)
+_SHORT_TEXT_MAX_SPW = 4.5       # flag if duration / word_count exceeds this
+
+# End-of-content zone: last N% of the timeline gets stricter hallucination filtering.
+# Whisper generates the most noise during end credits / silence after the last line.
+_END_ZONE_FRACTION = 0.97       # segments starting after 97% of total duration
+_END_ZONE_MAX_SPW = 3.0         # stricter spw threshold in end zone
+_END_ZONE_MIN_DURATION = 5.0    # apply stricter check only if duration ≥ 5s
 
 # Multi-speaker: segments longer than this word count get a line-break heuristic
 _MULTI_SPEAKER_MIN_WORDS = 16
@@ -63,6 +85,7 @@ def clean_segments(segments: list[SubtitleSegment]) -> list[SubtitleSegment]:
     result = fix_negative_timecodes(result)
     result = fix_invalid_durations(result)
     result = sort_chronologically(result)
+    result = filter_end_of_content(result)
     result = fix_overlaps(result)
     result = cap_display_duration(result)
     result = deduplicate_boundary_segments(result)
@@ -118,30 +141,48 @@ def remove_hallucinations(segments: list[SubtitleSegment]) -> list[SubtitleSegme
 def remove_duration_hallucinations(segments: list[SubtitleSegment]) -> list[SubtitleSegment]:
     """Remove segments where duration is implausibly long relative to text length.
 
-    Whisper fills silence with short hallucinated phrases that last many seconds
-    (e.g. 'I love you.' over 30 seconds). A real speaker averages ~2 words/second,
-    so more than 8 seconds per word is a strong hallucination signal.
+    Two checks:
+    1. Standard: duration > 12s AND > 8s/word (dense speech check)
+    2. Short-text: ≤5 words, duration ≥ 10s, > 4.5s/word
+       Catches "I love you." over 15s of music/silence that the standard
+       rule misses (3 words × 8s = 24s threshold, but 15s slips through).
     """
     kept = []
     removed = 0
     for s in segments:
         duration = s.end - s.start
-        if duration < _MIN_DURATION_FOR_HALLUCINATION_CHECK:
-            kept.append(s)
-            continue
         word_count = len(s.text.split())
+
         if word_count == 0:
             removed += 1
             continue
-        if duration / word_count > _MAX_SECONDS_PER_WORD:
+
+        spw = duration / word_count
+
+        # Standard check — long segments with high s/word ratio
+        if duration >= _MIN_DURATION_FOR_HALLUCINATION_CHECK and spw > _MAX_SECONDS_PER_WORD:
             removed += 1
             logger.debug(
-                f"Removing duration hallucination: '{s.text}' "
-                f"({duration:.1f}s / {word_count} words = "
-                f"{duration / word_count:.1f}s/word)"
+                f"Duration hallucination (standard): '{s.text}' "
+                f"({duration:.1f}s / {word_count}w = {spw:.1f}s/w)"
             )
-        else:
-            kept.append(s)
+            continue
+
+        # Short-text check — few words, long silence, suspicious s/word
+        if (
+            word_count <= _SHORT_TEXT_MAX_WORDS
+            and duration >= _SHORT_TEXT_MIN_DURATION
+            and spw > _SHORT_TEXT_MAX_SPW
+        ):
+            removed += 1
+            logger.debug(
+                f"Duration hallucination (short-text): '{s.text}' "
+                f"({duration:.1f}s / {word_count}w = {spw:.1f}s/w)"
+            )
+            continue
+
+        kept.append(s)
+
     if removed:
         logger.info(f"Removed {removed} duration-hallucinated segments")
     return kept
@@ -194,33 +235,88 @@ def split_multi_speaker(segments: list[SubtitleSegment]) -> list[SubtitleSegment
 
 
 def cap_display_duration(segments: list[SubtitleSegment]) -> list[SubtitleSegment]:
-    """Cap segment display time to a readable maximum (Netflix standard: 7s).
+    """Cap segment display time to a readable maximum.
 
-    Only trims segments where current duration significantly exceeds the time
-    needed to read the text. This avoids cutting short subtitles that are
-    legitimately long (dense speech), while fixing segments that are "stuck"
-    on screen well beyond their readable duration.
+    Two caps applied:
+    1. Hard max: 7s (Netflix standard) — never exceeded
+    2. Word-proportional soft cap: if duration > 3× natural reading time AND > 4s,
+       trim to 1.5× natural. Catches short text stuck on screen too long without
+       hitting the 7s hard max (e.g. "Yes." displayed for 6s).
+
+    Natural duration = max(1.5s, word_count × 0.7s + 0.8s buffer)
     """
     result = []
     capped = 0
     for s in segments:
         current = s.end - s.start
-        if current <= _MAX_DISPLAY_DURATION:
-            result.append(s)
-            continue
-        # Natural reading time: at least MIN, then chars-based
-        chars = len(s.text.replace("\n", " ").strip())
-        natural = max(_MIN_DISPLAY_DURATION, chars / _CHARS_PER_SECOND)
-        # Only cap if duration is well beyond readable (>50% over hard max)
-        if current > _MAX_DISPLAY_DURATION and current > natural * 1.5:
-            new_end = s.start + min(_MAX_DISPLAY_DURATION, max(natural, _MAX_DISPLAY_DURATION))
+        text = s.text.replace("\n", " ").strip()
+        word_count = len(text.split())
+
+        # Natural reading duration based on word count
+        natural = max(_MIN_DISPLAY_DURATION, word_count * 0.7 + 0.8)
+
+        if current > _MAX_DISPLAY_DURATION:
+            # Hard cap
             result.append(SubtitleSegment(id=s.id, start=s.start, end=s.start + _MAX_DISPLAY_DURATION, text=s.text))
+            capped += 1
+        elif current > natural * 3.0 and current > 4.0:
+            # Soft word-proportional cap (only if meaningfully over-long)
+            new_duration = min(_MAX_DISPLAY_DURATION, natural * 1.5)
+            result.append(SubtitleSegment(id=s.id, start=s.start, end=s.start + new_duration, text=s.text))
             capped += 1
         else:
             result.append(s)
+
     if capped:
-        logger.info(f"Capped display duration on {capped} segment(s) to max {_MAX_DISPLAY_DURATION}s")
+        logger.info(f"Capped display duration on {capped} segment(s)")
     return result
+
+
+def filter_end_of_content(segments: list[SubtitleSegment]) -> list[SubtitleSegment]:
+    """Apply stricter hallucination rules to the last ~3% of the timeline.
+
+    Whisper generates the most noise during end credits, long silence after the
+    last spoken line, and music-only sections at the end of a film. Any segment
+    in this zone that has an implausibly high s/word ratio is removed.
+
+    No VAD is used — this is a timing heuristic only.
+    """
+    if len(segments) < 10:
+        return segments
+
+    last_ts = max(s.start for s in segments)
+    threshold = last_ts * _END_ZONE_FRACTION
+
+    kept = []
+    removed = 0
+    for s in segments:
+        if s.start < threshold:
+            kept.append(s)
+            continue
+
+        duration = s.end - s.start
+        word_count = len(s.text.split())
+
+        if word_count == 0:
+            removed += 1
+            continue
+
+        spw = duration / word_count
+        # Stricter s/word threshold in the end zone
+        if duration >= _END_ZONE_MIN_DURATION and spw > _END_ZONE_MAX_SPW:
+            removed += 1
+            logger.debug(
+                f"End-zone hallucination: '{s.text}' "
+                f"({duration:.1f}s / {word_count}w = {spw:.1f}s/w, "
+                f"starts at {s.start:.1f}s / threshold {threshold:.1f}s)"
+            )
+            continue
+
+        kept.append(s)
+
+    if removed:
+        logger.info(f"Removed {removed} end-of-content hallucination(s)")
+    return kept
 
 
 def deduplicate_boundary_segments(segments: list[SubtitleSegment]) -> list[SubtitleSegment]:
