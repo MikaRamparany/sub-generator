@@ -148,7 +148,18 @@ class GroqSTTProvider(SpeechToTextProvider):
 
         assert response is not None
         if response.status_code == 429:
-            raise RuntimeError("API rate limit reached. Please wait and try again.")
+            retry_after = float(response.headers.get("retry-after", 30))
+            if attempt < _MAX_RETRIES:
+                logger.warning(
+                    f"Groq STT 429 — waiting {retry_after:.0f}s "
+                    f"(attempt {attempt + 1}/{_MAX_RETRIES + 1})"
+                )
+                await asyncio.sleep(retry_after)
+                continue
+            raise RuntimeError(
+                f"Groq STT rate limit reached after {_MAX_RETRIES + 1} attempts "
+                f"(retry-after={retry_after:.0f}s)."
+            )
         if response.status_code != 200:
             raise RuntimeError(
                 f"Groq STT API error {response.status_code}: {response.text[:300]}"

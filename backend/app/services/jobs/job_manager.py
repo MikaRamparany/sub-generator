@@ -165,6 +165,10 @@ class JobManager:
                 progress = 0.3 + (0.3 * (i / total_chunks))
                 job.update("transcribing", progress, f"Transcribing chunk {i + 1}/{total_chunks}...")
 
+                # Small courtesy delay between chunks to stay within STT rate limits
+                if i > 0:
+                    await asyncio.sleep(3)
+
                 source_lang = config.source_language if config.source_language != "auto" else None
                 segments = await self.stt_provider.transcribe(
                     chunk.path,
