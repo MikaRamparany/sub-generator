@@ -33,6 +33,9 @@ def extract_audio(
         "-map", f"0:{audio_track_index}",
         "-ac", "1",
         "-ar", "16000",
+        # highpass: remove low-frequency rumble/music bass (< 80 Hz) before STT
+        # dynaudnorm: level-normalise dynamics so quiet dialogue is as loud as action
+        "-af", "highpass=f=80,dynaudnorm=f=150:g=15",
         "-acodec", "pcm_s16le",
         output_path,
     ]

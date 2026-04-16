@@ -25,6 +25,7 @@ from app.services.subtitles.export_service import (
 )
 from app.services.subtitles.parse_service import parse_subtitle_file
 from app.services.subtitles.postprocess_service import clean_segments, clean_imported_segments
+from app.services.subtitles.translation_qa_service import qa_retranslate
 from app.utils.filesystem import (
     cleanup_directory,
     ensure_dir,
@@ -226,12 +227,21 @@ class JobManager:
             job.update("translating", progress, f"Translating to {lang}...")
 
             try:
+                source_lang = config.source_language if config.source_language != "auto" else None
                 translated = await self.translation_provider.translate_segments(
                     job.source_segments,
                     target_language=lang,
-                    source_language=config.source_language if config.source_language != "auto" else None,
+                    source_language=source_lang,
                     translation_mode=config.translation_mode,
                 )
+
+                # QA pass: detect and retranslate suspect segments via Groq
+                translated = await qa_retranslate(
+                    translated,
+                    target_language=lang,
+                    source_language=source_lang,
+                )
+
                 job.translations[lang] = translated
                 # Count segments where translation fell back to source text
                 fallbacks = sum(
