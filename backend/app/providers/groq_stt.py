@@ -136,6 +136,20 @@ class GroqSTTProvider(SpeechToTextProvider):
                     f"{type(e).__name__}: {e or 'connection lost'}"
                 )
 
+            if response.status_code == 429:
+                retry_after = float(response.headers.get("retry-after", 30))
+                if attempt < _MAX_RETRIES:
+                    logger.warning(
+                        f"Groq STT 429 — waiting {retry_after:.0f}s "
+                        f"(attempt {attempt + 1}/{_MAX_RETRIES + 1})"
+                    )
+                    await asyncio.sleep(retry_after)
+                    continue
+                raise RuntimeError(
+                    f"Groq STT rate limit reached after {_MAX_RETRIES + 1} attempts "
+                    f"(retry-after={retry_after:.0f}s)."
+                )
+
             if response.status_code in _RETRYABLE_STATUS and attempt < _MAX_RETRIES:
                 wait = _RETRY_BACKOFF[attempt]
                 logger.warning(
@@ -147,19 +161,6 @@ class GroqSTTProvider(SpeechToTextProvider):
             break
 
         assert response is not None
-        if response.status_code == 429:
-            retry_after = float(response.headers.get("retry-after", 30))
-            if attempt < _MAX_RETRIES:
-                logger.warning(
-                    f"Groq STT 429 — waiting {retry_after:.0f}s "
-                    f"(attempt {attempt + 1}/{_MAX_RETRIES + 1})"
-                )
-                await asyncio.sleep(retry_after)
-                continue
-            raise RuntimeError(
-                f"Groq STT rate limit reached after {_MAX_RETRIES + 1} attempts "
-                f"(retry-after={retry_after:.0f}s)."
-            )
         if response.status_code != 200:
             raise RuntimeError(
                 f"Groq STT API error {response.status_code}: {response.text[:300]}"
