@@ -41,7 +41,7 @@ _CONTEXT_WINDOW = 3
 # Max suspects to retranslate (those with the highest scores are prioritised)
 _MAX_QA_SEGMENTS = 60
 # Delay between Groq calls in the QA pass
-_QA_INTER_DELAY = 1.2
+_QA_INTER_DELAY = 2.5     # ~24 RPM — stays under Groq free tier limit (30 RPM)
 _QA_RETRIES = 2
 
 # Minimum occurrences for consistency check
