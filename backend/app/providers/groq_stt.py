@@ -98,18 +98,17 @@ class GroqSTTProvider(SpeechToTextProvider):
             f"Transcribing with model={model}, language={source_language}, mode={quality_mode}"
         )
 
-        # List of tuples allows repeating the same field name (required by
-        # multipart form-data to send two timestamp_granularities[] values).
-        data: list[tuple[str, str]] = [
-            ("model", model),
-            ("response_format", "verbose_json"),
-            ("timestamp_granularities[]", "segment"),
-            ("timestamp_granularities[]", "word"),  # needed for start-snapping
-        ]
+        # httpx accepts a list as dict value to repeat a field name in multipart,
+        # which is what Groq expects for timestamp_granularities[].
+        data: dict[str, object] = {
+            "model": model,
+            "response_format": "verbose_json",
+            "timestamp_granularities[]": ["segment", "word"],  # both → word-snap
+        }
         if source_language and source_language != "auto":
-            data.append(("language", source_language))
+            data["language"] = source_language
         if quality_mode == "high_quality":
-            data.append(("temperature", "0"))
+            data["temperature"] = "0"
 
         response: httpx.Response | None = None
         for attempt in range(_MAX_RETRIES + 1):
