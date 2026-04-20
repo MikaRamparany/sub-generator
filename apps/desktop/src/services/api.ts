@@ -7,7 +7,12 @@ import type {
   SubtitleFileInfo,
 } from "../types";
 
-const BASE_URL = "/api";
+// In dev mode, Vite proxies /api → http://127.0.0.1:8000.
+// In the bundled app there is no proxy, so we need the absolute URL.
+const BASE_URL =
+  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
+    ? "http://127.0.0.1:8000/api"
+    : "/api";
 
 async function request<T>(
   path: string,

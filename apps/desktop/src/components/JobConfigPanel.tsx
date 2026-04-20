@@ -15,9 +15,7 @@ export function JobConfigPanel({ probe, videoPath, subtitlePath, onStart, disabl
   const [audioTrack, setAudioTrack] = useState(probe?.audio_tracks[0]?.index ?? 0);
   const [sourceLanguage, setSourceLanguage] = useState("auto");
   const [targetLanguages, setTargetLanguages] = useState<string[]>([]);
-  const [outputFormats, setOutputFormats] = useState<string[]>(["srt", "vtt"]);
   const [qualityMode, setQualityMode] = useState<"fast" | "high_quality">("fast");
-  const [translationMode, setTranslationMode] = useState<"fast" | "balanced" | "safe">("fast");
   const [pipelineMode, setPipelineMode] = useState<"standard" | "premium">("standard");
 
   const toggleLang = (code: string) => {
@@ -26,37 +24,32 @@ export function JobConfigPanel({ probe, videoPath, subtitlePath, onStart, disabl
     );
   };
 
-  const toggleFormat = (fmt: string) => {
-    setOutputFormats((prev) =>
-      prev.includes(fmt) ? prev.filter((f) => f !== fmt) : [...prev, fmt]
-    );
-  };
+  const canSubmit = isSubtitleMode ? targetLanguages.length > 0 : true;
 
   const handleStart = () => {
-    if (isSubtitleMode && targetLanguages.length === 0) return;
-    if (!isSubtitleMode && outputFormats.length === 0) return;
-
+    if (!canSubmit) return;
     onStart({
       input_video_path: isSubtitleMode ? "" : videoPath,
       input_subtitle_path: subtitlePath || "",
       audio_track_index: audioTrack,
       source_language: sourceLanguage,
       target_languages: targetLanguages,
-      output_formats: outputFormats,
+      output_formats: ["srt", "vtt"],
       quality_mode: qualityMode,
-      translation_mode: translationMode,
+      translation_mode: "balanced",
       pipeline_mode: pipelineMode,
     });
   };
 
   return (
     <div className="job-config">
-      <h3>Configuration</h3>
 
+      {/* Audio track — only if multiple tracks */}
       {!isSubtitleMode && probe && probe.audio_tracks.length > 1 && (
         <div className="config-section">
-          <label>Audio Track</label>
+          <div className="config-label">Audio Track</div>
           <select
+            className="config-select"
             value={audioTrack}
             onChange={(e) => setAudioTrack(Number(e.target.value))}
             disabled={disabled}
@@ -64,17 +57,19 @@ export function JobConfigPanel({ probe, videoPath, subtitlePath, onStart, disabl
             {probe.audio_tracks.map((track: AudioTrack) => (
               <option key={track.index} value={track.index}>
                 Track {track.index}
-                {track.language ? ` (${track.language})` : ""}
-                {track.codec ? ` — ${track.codec}` : ""}
+                {track.language ? ` · ${track.language}` : ""}
+                {track.codec ? ` · ${track.codec}` : ""}
               </option>
             ))}
           </select>
         </div>
       )}
 
+      {/* Source language */}
       <div className="config-section">
-        <label>Source Language</label>
+        <div className="config-label">Source Language</div>
         <select
+          className="config-select"
           value={sourceLanguage}
           onChange={(e) => setSourceLanguage(e.target.value)}
           disabled={disabled}
@@ -86,142 +81,83 @@ export function JobConfigPanel({ probe, videoPath, subtitlePath, onStart, disabl
         </select>
       </div>
 
+      {/* Target languages */}
       <div className="config-section">
-        <label>Translate to{isSubtitleMode && " (required)"}</label>
-        <div className="checkbox-group">
+        <div className="config-label">
+          {isSubtitleMode ? "Translate to — required" : "Translate to — optional"}
+        </div>
+        <div className="lang-chips">
           {AVAILABLE_LANGUAGES.map((l) => (
-            <label key={l.code} className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={targetLanguages.includes(l.code)}
-                onChange={() => toggleLang(l.code)}
-                disabled={disabled}
-              />
+            <button
+              key={l.code}
+              className={`lang-chip ${targetLanguages.includes(l.code) ? "selected" : ""}`}
+              onClick={() => toggleLang(l.code)}
+              disabled={disabled}
+            >
               {l.name}
-            </label>
+            </button>
           ))}
         </div>
       </div>
 
-      <div className="config-section">
-        <label>Export Formats</label>
-        <div className="checkbox-group">
-          {["srt", "vtt"].map((fmt) => (
-            <label key={fmt} className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={outputFormats.includes(fmt)}
-                onChange={() => toggleFormat(fmt)}
-                disabled={disabled}
-              />
-              .{fmt}
-            </label>
-          ))}
-        </div>
-      </div>
-
+      {/* Quality mode — video only */}
       {!isSubtitleMode && (
         <div className="config-section">
-          <label>Quality Mode</label>
-          <div className="radio-group">
-            <label className="radio-label">
-              <input
-                type="radio"
-                name="quality"
-                checked={qualityMode === "fast"}
-                onChange={() => setQualityMode("fast")}
-                disabled={disabled}
-              />
+          <div className="config-label">Transcription Quality</div>
+          <div className="segmented-control">
+            <button
+              className={`seg-btn ${qualityMode === "fast" ? "active" : ""}`}
+              onClick={() => setQualityMode("fast")}
+              disabled={disabled}
+            >
               Fast
-            </label>
-            <label className="radio-label">
-              <input
-                type="radio"
-                name="quality"
-                checked={qualityMode === "high_quality"}
-                onChange={() => setQualityMode("high_quality")}
-                disabled={disabled}
-              />
+              <span className="seg-btn-sub">Whisper Turbo</span>
+            </button>
+            <button
+              className={`seg-btn ${qualityMode === "high_quality" ? "active" : ""}`}
+              onClick={() => setQualityMode("high_quality")}
+              disabled={disabled}
+            >
               High Quality
-            </label>
+              <span className="seg-btn-sub">Whisper Large v3</span>
+            </button>
           </div>
         </div>
       )}
 
-      {targetLanguages.length > 0 && (
-        <div className="config-section">
-          <label>Translation Mode</label>
-          <div className="radio-group">
-            <label className="radio-label">
-              <input
-                type="radio"
-                name="translation_mode"
-                checked={translationMode === "fast"}
-                onChange={() => setTranslationMode("fast")}
-                disabled={disabled}
-              />
-              Fast
-            </label>
-            <label className="radio-label">
-              <input
-                type="radio"
-                name="translation_mode"
-                checked={translationMode === "balanced"}
-                onChange={() => setTranslationMode("balanced")}
-                disabled={disabled}
-              />
-              Balanced <span className="hint">(recommandé pour les longs films)</span>
-            </label>
-            <label className="radio-label">
-              <input
-                type="radio"
-                name="translation_mode"
-                checked={translationMode === "safe"}
-                onChange={() => setTranslationMode("safe")}
-                disabled={disabled}
-              />
-              Safe <span className="hint">(très patient, mais lent)</span>
-            </label>
-          </div>
-        </div>
-      )}
-
+      {/* Pipeline mode */}
       <div className="config-section">
-        <label>Pipeline</label>
-        <div className="radio-group">
-          <label className="radio-label">
-            <input
-              type="radio"
-              name="pipeline_mode"
-              checked={pipelineMode === "standard"}
-              onChange={() => setPipelineMode("standard")}
-              disabled={disabled}
-            />
-            Standard <span className="hint">(rapide, coût maîtrisé)</span>
-          </label>
-          <label className="radio-label">
-            <input
-              type="radio"
-              name="pipeline_mode"
-              checked={pipelineMode === "premium"}
-              onChange={() => setPipelineMode("premium")}
-              disabled={disabled}
-            />
-            Premium <span className="hint">(analyse contexte + QA renforcée)</span>
-          </label>
+        <div className="config-label">Pipeline</div>
+        <div className="segmented-control">
+          <button
+            className={`seg-btn ${pipelineMode === "standard" ? "active" : ""}`}
+            onClick={() => setPipelineMode("standard")}
+            disabled={disabled}
+          >
+            Standard
+            <span className="seg-btn-sub">Fast · cost-efficient</span>
+          </button>
+          <button
+            className={`seg-btn ${pipelineMode === "premium" ? "active" : ""}`}
+            onClick={() => setPipelineMode("premium")}
+            disabled={disabled}
+          >
+            Premium
+            <span className="seg-btn-sub">Context analysis · QA</span>
+          </button>
         </div>
       </div>
 
-      <button
-        className="btn-primary"
-        onClick={handleStart}
-        disabled={
-          disabled ||
-          (isSubtitleMode ? targetLanguages.length === 0 : outputFormats.length === 0)
-        }
-      >
-        {isSubtitleMode ? "Translate Subtitles" : "Generate Subtitles"}
-      </button>
+      {/* Submit */}
+      <div className="config-submit">
+        <button
+          className="btn-primary"
+          onClick={handleStart}
+          disabled={disabled || !canSubmit}
+        >
+          {isSubtitleMode ? "Translate Subtitles" : "Generate Subtitles"}
+        </button>
+      </div>
     </div>
   );
 }

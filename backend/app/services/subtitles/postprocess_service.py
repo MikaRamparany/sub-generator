@@ -6,6 +6,157 @@ from difflib import SequenceMatcher
 from app.core.logging import logger
 from app.models.schemas import SubtitleSegment
 
+# ---------------------------------------------------------------------------
+# Proper-noun post-correction helpers (STT output fix)
+# ---------------------------------------------------------------------------
+
+
+def _edit_distance(a: str, b: str) -> int:
+    """Levenshtein edit distance (O(n·m) time, O(n) space)."""
+    m, n = len(a), len(b)
+    if m == 0:
+        return n
+    if n == 0:
+        return m
+    dp = list(range(n + 1))
+    for i in range(1, m + 1):
+        prev, dp[0] = dp[0], i
+        for j in range(1, n + 1):
+            prev, dp[j] = dp[j], (
+                prev if a[i - 1] == b[j - 1]
+                else 1 + min(prev, dp[j], dp[j - 1])
+            )
+    return dp[n]
+
+
+def _letters_only(text: str) -> str:
+    """Return only lowercase ASCII letters from *text*."""
+    return re.sub(r"[^a-z]", "", text.lower())
+
+
+def _max_allowed_distance(noun_len: int) -> int:
+    """Edit-distance budget for a proper noun of *noun_len* letters.
+
+    Tuned so that a single-word name phonetically split into two words
+    (e.g. "Sonam" → "So numb": distance 2) falls within tolerance, while
+    short names stay strict to avoid false positives.
+    """
+    if noun_len <= 3:
+        return 0
+    if noun_len <= 7:
+        return 2
+    return 3
+
+
+def _replace_exact(text: str, proper: str) -> tuple[str, bool]:
+    """Case-insensitive exact replacement of *proper* as whole word(s)."""
+    pattern = re.compile(r"\b" + re.escape(proper) + r"\b", re.IGNORECASE)
+    new_text, count = pattern.subn(proper, text)
+    return new_text, count > 0
+
+
+def _replace_2gram(text: str, proper: str) -> tuple[str, bool]:
+    """Try to find a 2-word span whose letters are a close phonetic match for *proper*.
+
+    Designed to catch cases where Whisper splits a proper noun into two
+    common words, e.g. "Sonam" → "So numb".
+
+    Only used for single-word proper nouns (no internal space).
+    Never replaces if both individual words are exact dictionary words whose
+    combined edit distance to the proper noun is too high.
+    """
+    proper_norm = _letters_only(proper)
+    if len(proper_norm) < 4:
+        return text, False
+
+    max_dist = _max_allowed_distance(len(proper_norm))
+    tokens = text.split()
+
+    if len(tokens) < 2:
+        return text, False
+
+    for i in range(len(tokens) - 1):
+        w1_letters = _letters_only(tokens[i])
+        w2_letters = _letters_only(tokens[i + 1])
+        combined = w1_letters + w2_letters
+
+        if not combined:
+            continue
+
+        # Length guard: skip obviously different lengths early
+        if abs(len(combined) - len(proper_norm)) > max_dist + 1:
+            continue
+
+        dist = _edit_distance(combined, proper_norm)
+        if dist > max_dist:
+            continue
+
+        # Similarity ratio guard — avoids borderline matches on very short nouns
+        ratio = 1.0 - dist / max(len(combined), len(proper_norm))
+        if ratio < 0.60:
+            continue
+
+        # Build replacement preserving surrounding punctuation
+        leading = re.match(r"^(\W*)", tokens[i])
+        trailing = re.search(r"(\W*)$", tokens[i + 1])
+        prefix = leading.group(1) if leading else ""
+        suffix = trailing.group(1) if trailing else ""
+
+        replacement = prefix + proper + suffix
+        new_tokens = tokens[:i] + [replacement] + tokens[i + 2:]
+        return " ".join(new_tokens), True
+
+    return text, False
+
+
+def correct_proper_nouns_in_segments(
+    segments: list[SubtitleSegment],
+    proper_nouns: list[str],
+) -> tuple[list[SubtitleSegment], int]:
+    """Post-correct STT output using a list of known proper nouns.
+
+    Two strategies per noun, applied in order:
+    1. Case-insensitive exact word match  →  re-capitalise correctly
+       (e.g. "sonam" → "Sonam", "SONAM" → "Sonam")
+    2. Adjacent-word phonetic match       →  collapse two words into the name
+       (e.g. "So numb" → "Sonam")
+       Only for single-word proper nouns.
+
+    Never modifies timing.  Returns (corrected_segments, corrected_count).
+    corrected_count = number of segments where at least one substitution was made.
+    """
+    if not proper_nouns:
+        return segments, 0
+
+    corrected_count = 0
+    result: list[SubtitleSegment] = []
+
+    for seg in segments:
+        text = seg.text
+        changed = False
+
+        for noun in proper_nouns:
+            # Strategy 1: exact case-insensitive
+            new_text, was_changed = _replace_exact(text, noun)
+            if was_changed:
+                text = new_text
+                changed = True
+                continue
+
+            # Strategy 2: phonetic 2-gram (single-word nouns only)
+            if " " not in noun:
+                new_text, was_changed = _replace_2gram(text, noun)
+                if was_changed:
+                    text = new_text
+                    changed = True
+
+        if changed:
+            corrected_count += 1
+
+        result.append(SubtitleSegment(id=seg.id, start=seg.start, end=seg.end, text=text))
+
+    return result, corrected_count
+
 MIN_SEGMENT_DURATION = 0.3  # seconds
 MAX_GAP_FOR_MERGE = 0.15  # seconds
 

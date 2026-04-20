@@ -22,40 +22,55 @@ export function SubtitlePreview({ jobId }: Props) {
   }, [jobId]);
 
   if (error) return <p className="error-message">{error}</p>;
-  if (!preview) return <p>Loading preview...</p>;
+  if (!preview) return null;
 
   const languages = Object.keys(preview.translations);
-  const segments = selectedLang === "source"
-    ? preview.source_segments
-    : (preview.translations[selectedLang] ?? []).map((s) => ({
-        id: s.id,
-        start: s.start,
-        end: s.end,
-        text: s.translated_text,
-      }));
+  const segments =
+    selectedLang === "source"
+      ? preview.source_segments
+      : (preview.translations[selectedLang] ?? []).map((s) => ({
+          id: s.id,
+          start: s.start,
+          end: s.end,
+          text: s.translated_text,
+        }));
 
   return (
     <div className="subtitle-preview">
       <div className="preview-header">
-        <h3>Preview</h3>
-        <select value={selectedLang} onChange={(e) => setSelectedLang(e.target.value)}>
-          <option value="source">Source</option>
+        <span className="preview-header-title">Preview</span>
+        <div className="preview-lang-tabs">
+          <button
+            className={`preview-lang-btn ${selectedLang === "source" ? "active" : ""}`}
+            onClick={() => setSelectedLang("source")}
+          >
+            Source
+          </button>
           {languages.map((lang) => (
-            <option key={lang} value={lang}>{lang.toUpperCase()}</option>
+            <button
+              key={lang}
+              className={`preview-lang-btn ${selectedLang === lang ? "active" : ""}`}
+              onClick={() => setSelectedLang(lang)}
+            >
+              {lang.toUpperCase()}
+            </button>
           ))}
-        </select>
+        </div>
       </div>
       <div className="segments-list">
-        {segments.map((seg) => (
-          <div key={seg.id} className="segment-row">
-            <span className="segment-id">#{seg.id}</span>
-            <span className="segment-time">
-              {formatTime(seg.start)} → {formatTime(seg.end)}
-            </span>
-            <span className="segment-text">{seg.text}</span>
-          </div>
-        ))}
-        {segments.length === 0 && <p className="hint">No segments available</p>}
+        {segments.length === 0 ? (
+          <p className="hint" style={{ padding: "16px 18px" }}>No segments available</p>
+        ) : (
+          segments.map((seg) => (
+            <div key={seg.id} className="segment-row">
+              <span className="segment-id">#{seg.id}</span>
+              <span className="segment-time">
+                {formatTime(seg.start)} → {formatTime(seg.end)}
+              </span>
+              <span className="segment-text">{seg.text}</span>
+            </div>
+          ))
+        )}
       </div>
     </div>
   );

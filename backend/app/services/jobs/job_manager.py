@@ -24,7 +24,12 @@ from app.services.subtitles.export_service import (
     write_subtitle_file,
 )
 from app.services.subtitles.parse_service import parse_subtitle_file
-from app.services.subtitles.postprocess_service import clean_segments, clean_imported_segments
+from app.services.subtitles.postprocess_service import (
+    clean_segments,
+    clean_imported_segments,
+    correct_proper_nouns_in_segments,
+)
+from app.models.context import TranscriptContext
 from app.services.subtitles.transcript_context_service import analyze_transcript
 from app.services.subtitles.translation_qa_service import is_legitimate_identical, qa_retranslate
 from app.utils.filesystem import (
@@ -122,11 +127,17 @@ class JobManager:
             job.update("post_processing", 0.4, "Processing segments...")
             job.source_segments = clean_imported_segments(raw_segments)
 
-            # Step 3: Generate source exports
+            # Step 3: Premium — analyse transcript for translation context
+            # (no STT correction needed here — user-provided text is already correct)
+            transcript_context = await self._fetch_transcript_context(job, progress=0.45)
+
+            # Step 4: Generate source exports
             self._generate_exports(job, job.source_segments, "original")
 
-            # Step 4: Translate
-            await self._translate_phase(job, start_progress=0.5)
+            # Step 5: Translate
+            await self._translate_phase(
+                job, start_progress=0.5, transcript_context=transcript_context
+            )
 
             # Finalize
             self._finalize(job)
@@ -198,14 +209,30 @@ class JobManager:
             job.source_segments = clean_segments(all_segments)
             job.status.removed_segment_count = len(all_segments) - len(job.source_segments)
 
-            # Step 5: Generate source exports
+            # Step 4b: Premium — analyse transcript context + correct STT proper nouns
+            # This runs BEFORE export so the "original" file already contains
+            # corrected names (e.g. "So numb" → "Sonam").
+            transcript_context = await self._fetch_transcript_context(job, progress=0.67)
+            if transcript_context and transcript_context.proper_nouns:
+                job.source_segments, corrected = correct_proper_nouns_in_segments(
+                    job.source_segments, transcript_context.proper_nouns
+                )
+                if corrected:
+                    logger.info(
+                        f"[Job {job.job_id}] Proper-noun correction: "
+                        f"{corrected} segment(s) fixed in STT output"
+                    )
+
+            # Step 5: Generate source exports (corrected in premium mode)
             self._generate_exports(job, job.source_segments, "original")
 
             # Cleanup intermediates now that exports are generated
             self._cleanup_intermediates(audio_path, chunk_dir)
 
             # Step 6: Translate
-            await self._translate_phase(job, start_progress=0.7)
+            await self._translate_phase(
+                job, start_progress=0.7, transcript_context=transcript_context
+            )
 
             # Finalize
             self._finalize(job)
@@ -216,12 +243,49 @@ class JobManager:
             msg = str(e) or f"{type(e).__name__} (no details)"
             job.fail(msg, "pipeline_error")
 
-    async def _translate_phase(self, job: Job, start_progress: float) -> None:
+    async def _fetch_transcript_context(
+        self, job: Job, progress: float
+    ) -> TranscriptContext | None:
+        """Run transcript analysis (premium only). Returns None in standard mode or on failure."""
+        config = job.config
+        if config.pipeline_mode != "premium" or not job.source_segments:
+            return None
+
+        source_lang = config.source_language if config.source_language != "auto" else None
+        first_lang = config.target_languages[0] if config.target_languages else None
+        if not first_lang:
+            return None
+
+        job.update("analysing_transcript", progress, "Analysing transcript for context...")
+        ctx = await analyze_transcript(
+            job.source_segments,
+            source_language=source_lang,
+            target_language=first_lang,
+        )
+        if ctx:
+            logger.info(
+                f"[Job {job.job_id}] Transcript context ready "
+                f"(confidence={ctx.confidence:.2f}, "
+                f"proper_nouns={len(ctx.proper_nouns)}, "
+                f"glossary={len(ctx.glossary)})"
+            )
+        return ctx
+
+    async def _translate_phase(
+        self,
+        job: Job,
+        start_progress: float,
+        transcript_context: TranscriptContext | None = None,
+    ) -> None:
         """Run translation for all target languages.
 
         Standard mode: translate → basic QA (top-60 suspects)
-        Premium mode:  transcript analysis → translate with context → prioritised QA
+        Premium mode:  translate with context (pre-computed) → prioritised QA (top-80)
                        → terminology consistency pass
+
+        *transcript_context* is pre-computed by the caller (_run_video_job /
+        _run_subtitle_import_job) so that proper-noun correction can be applied
+        to STT output BEFORE the exports are generated.
         """
         config = job.config
         if not config.target_languages:
@@ -230,28 +294,11 @@ class JobManager:
         is_premium = config.pipeline_mode == "premium"
         source_lang = config.source_language if config.source_language != "auto" else None
 
-        # Cooldown to let Groq rate limits reset after STT
-        job.update("translating", start_progress, "Waiting before translation (rate limit cooldown)...")
+        # Brief cooldown so Groq rate limits can partially reset after STT.
+        # (In premium mode the transcript analysis already adds a few seconds,
+        #  but standard mode goes straight from STT to translation.)
+        job.update("translating", start_progress, "Preparing translation...")
         await asyncio.sleep(5)
-
-        # Premium: one global transcript analysis before translating any language
-        transcript_context = None
-        if is_premium and job.source_segments:
-            job.update(
-                "translating", start_progress + 0.02,
-                "Analysing transcript for context..."
-            )
-            for lang in config.target_languages[:1]:  # analyse for first target lang
-                transcript_context = await analyze_transcript(
-                    job.source_segments,
-                    source_language=source_lang,
-                    target_language=lang,
-                )
-            if transcript_context:
-                logger.info(
-                    f"[Job {job.job_id}] Premium: transcript context ready "
-                    f"(confidence={transcript_context.confidence:.2f})"
-                )
 
         total_langs = len(config.target_languages)
         for i, lang in enumerate(config.target_languages):

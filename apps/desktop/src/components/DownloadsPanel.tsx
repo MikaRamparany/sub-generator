@@ -13,14 +13,16 @@ async function saveBlob(blob: Blob, defaultName: string): Promise<void> {
   if (isTauri()) {
     const { save } = await import("@tauri-apps/plugin-dialog");
     const { writeFile } = await import("@tauri-apps/plugin-fs");
-
+    const { invoke } = await import("@tauri-apps/api/core");
     const path = await save({ defaultPath: defaultName });
-    if (!path) return; // user cancelled
-
+    if (!path) return;
     const buffer = new Uint8Array(await blob.arrayBuffer());
     await writeFile(path, buffer);
+    // Remove the com.apple.macl xattr macOS sets on files saved through
+    // a sandboxed app dialog — without this, the Python backend can't read
+    // the file back (e.g. for subtitle re-import).
+    await invoke("remove_macl_xattr", { path }).catch(() => {});
   } else {
-    // Browser fallback
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -35,23 +37,18 @@ async function saveBlob(blob: Blob, defaultName: string): Promise<void> {
 async function downloadFile(jobId: string, fileName: string): Promise<void> {
   const url = `${BACKEND_BASE}/jobs/${jobId}/downloads/${encodeURIComponent(fileName)}`;
   const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Download failed: ${response.status}`);
-  }
-  const blob = await response.blob();
-  await saveBlob(blob, fileName);
+  if (!response.ok) throw new Error(`Download failed: ${response.status}`);
+  await saveBlob(await response.blob(), fileName);
 }
 
 async function downloadZip(jobId: string): Promise<void> {
   const url = `${BACKEND_BASE}/jobs/${jobId}/downloads/zip`;
   const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Download failed: ${response.status}`);
-  }
+  if (!response.ok) throw new Error(`Download failed: ${response.status}`);
   const blob = await response.blob();
   const disposition = response.headers.get("Content-Disposition") ?? "";
   const match = disposition.match(/filename="([^"]+)"/);
-  const fileName = match ? match[1] : "subtitles.zip";
+  const fileName = match?.[1] ?? "subtitles.zip";
   await saveBlob(blob, fileName);
 }
 
@@ -67,17 +64,6 @@ export function DownloadsPanel({ jobId }: Props) {
       .catch((e) => setError(e.message));
   }, [jobId]);
 
-  const handleDownloadZip = async () => {
-    setDownloadingZip(true);
-    try {
-      await downloadZip(jobId);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Download failed");
-    } finally {
-      setDownloadingZip(false);
-    }
-  };
-
   const handleDownload = async (file: ExportFile) => {
     setDownloading(file.file_name);
     try {
@@ -89,12 +75,23 @@ export function DownloadsPanel({ jobId }: Props) {
     }
   };
 
+  const handleDownloadZip = async () => {
+    setDownloadingZip(true);
+    try {
+      await downloadZip(jobId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Download failed");
+    } finally {
+      setDownloadingZip(false);
+    }
+  };
+
   if (error) return <p className="error-message">{error}</p>;
-  if (files.length === 0) return <p className="hint">No exports available yet</p>;
+  if (files.length === 0) return null;
 
   return (
     <div className="downloads-panel">
-      <h3>Downloads</h3>
+      <div className="downloads-header">Downloads</div>
       <div className="downloads-list">
         {files.map((file) => (
           <button
@@ -105,18 +102,20 @@ export function DownloadsPanel({ jobId }: Props) {
           >
             <span className="file-name">{file.file_name}</span>
             <span className="file-badge">
-              {downloading === file.file_name ? "..." : file.format.toUpperCase()}
+              {downloading === file.file_name ? "…" : file.format.toUpperCase()}
             </span>
           </button>
         ))}
       </div>
-      <button
-        className="download-zip-btn"
-        onClick={handleDownloadZip}
-        disabled={downloadingZip}
-      >
-        {downloadingZip ? "Preparing zip..." : "Download all (.zip)"}
-      </button>
+      <div className="download-zip-wrap">
+        <button
+          className="download-zip-btn"
+          onClick={handleDownloadZip}
+          disabled={downloadingZip}
+        >
+          {downloadingZip ? "Preparing…" : "Download all as .zip"}
+        </button>
+      </div>
     </div>
   );
 }

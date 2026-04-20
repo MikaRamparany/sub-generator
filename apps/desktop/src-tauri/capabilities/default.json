@@ -7,6 +7,14 @@
     "core:default",
     "dialog:allow-open",
     "dialog:allow-save",
-    "fs:allow-download-write"
+    "fs:allow-download-write",
+    {
+      "identifier": "fs:allow-write-text-file",
+      "allow": [{ "path": "$HOME/**" }]
+    },
+    {
+      "identifier": "fs:allow-write-file",
+      "allow": [{ "path": "$HOME/**" }]
+    }
   ]
 }

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { getAbsolutePathFromFile, isTauri, openVideoFileDialog } from "../lib/tauri";
+import { getAbsolutePathFromFile, openVideoFileDialog } from "../lib/tauri";
 import { probeSubtitle, probeVideo } from "../services/api";
 import type { ProbeResult, SubtitleFileInfo } from "../types";
 import { SUPPORTED_FORMATS, SUPPORTED_SUBTITLE_FORMATS } from "../types";
@@ -23,14 +23,10 @@ export function VideoImport({ onProbeComplete, onSubtitleImport }: Props) {
   const handleAbsolutePath = async (filePath: string) => {
     setError(null);
     const ext = getExtension(filePath);
-
     if (!ALL_EXTENSIONS.includes(ext)) {
-      setError(
-        `Unsupported format: .${ext}. Supported: ${ALL_EXTENSIONS.join(", ")}`
-      );
+      setError(`Unsupported format: .${ext}`);
       return;
     }
-
     setLoading(true);
     try {
       if (SUPPORTED_SUBTITLE_FORMATS.includes(ext)) {
@@ -53,8 +49,7 @@ export function VideoImport({ onProbeComplete, onSubtitleImport }: Props) {
       const path = await openVideoFileDialog();
       if (path) await handleAbsolutePath(path);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(`File dialog error: ${msg}`);
+      setError(e instanceof Error ? e.message : "File dialog error");
     }
   };
 
@@ -62,22 +57,13 @@ export function VideoImport({ onProbeComplete, onSubtitleImport }: Props) {
     e.preventDefault();
     setDragOver(false);
     setError(null);
-
     const file = e.dataTransfer.files[0];
     if (!file) return;
-
     const path = getAbsolutePathFromFile(file);
     if (path) {
       await handleAbsolutePath(path);
-    } else if (!isTauri()) {
-      setError(
-        "File paths are not accessible in browser mode. " +
-          "Run the app with: npm run tauri dev"
-      );
     } else {
-      setError(
-        "Could not get the file path. Try using the Browse button instead."
-      );
+      setError("Could not get file path. Try the Browse button.");
     }
   };
 
@@ -91,19 +77,26 @@ export function VideoImport({ onProbeComplete, onSubtitleImport }: Props) {
         onClick={handleBrowseClick}
       >
         {loading ? (
-          <p>Analyzing file...</p>
+          <div className="drop-zone-loading">
+            <div className="spinner" />
+            Analyzing file…
+          </div>
         ) : (
           <>
-            <p className="drop-icon">🎬</p>
-            <p>Drop a video or subtitle file here, or click to browse</p>
-            <p className="hint">Video: MP4, MOV, MKV, AVI, WEBM</p>
-            <p className="hint">Subtitles: SRT, VTT (translation only)</p>
-            {!isTauri() && (
-              <p className="hint" style={{ color: "#f59e0b", marginTop: 8 }}>
-                ⚠ Browser mode — run with{" "}
-                <code>npm run tauri dev</code> for full functionality
-              </p>
-            )}
+            <div className="drop-icon-wrap">
+              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="17 8 12 3 7 8" />
+                <line x1="12" y1="3" x2="12" y2="15" />
+              </svg>
+            </div>
+            <p className="drop-title">Drop a file or click to browse</p>
+            <p className="drop-sub">Video or subtitle file</p>
+            <div className="drop-formats">
+              {ALL_EXTENSIONS.map((ext) => (
+                <span key={ext} className="format-tag">{ext}</span>
+              ))}
+            </div>
           </>
         )}
       </div>

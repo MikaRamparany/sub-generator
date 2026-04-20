@@ -76,8 +76,6 @@ export default function App() {
   }, [jobId]);
 
   const showResults = step === "done" || step === "failed";
-  const isSubtitleMode = Boolean(subtitleInfo);
-
   const renderFileInfo = () => {
     if (probe) return <VideoInfo probe={probe} />;
     if (subtitleInfo) return <SubtitleInfo info={subtitleInfo} />;
